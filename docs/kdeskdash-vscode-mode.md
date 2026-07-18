@@ -77,6 +77,37 @@ Field notes:
 kvscf validates the token, then foregrounds that HWND. Verified live: tapping publishes → the window
 comes to the foreground on cleo.
 
+## 3. Edge windows (WI #474) — extend Remote Mode
+
+kvscf also publishes open **Microsoft Edge** windows, so kdeskdash can add an Edge mode (or a
+Code/Edge toggle). Same shape as the instance list; the **focus command is identical** (the `id` is
+just an HWND, kind-agnostic — publish to `kvscf:focus:<host>` exactly as for VS Code).
+
+- **Key:** `kvscf:edge:<host>` (e.g. `kvscf:edge:cleo`), Redis **String** = JSON, **TTL 10s**,
+  republished ~1s. Discover via `SCAN kvscf:edge:*`.
+- **Payload:**
+
+```json
+{
+  "host": "cleo",
+  "ts": 1784416199,
+  "windows": [
+    { "id": "133434", "label": "AI-2 Computer Purchase", "named": true,  "tab_count": null, "z_index": 64 },
+    { "id": "657812", "label": "Dashboard | Claude Platform", "named": false, "tab_count": 9, "z_index": 34 }
+  ]
+}
+```
+
+Field notes:
+- `id` — the HWND string (the focus token; echo it back in the focus command, same as VS Code).
+- `label` — ready-to-render: the user-set window name for **named** windows, else the active tab title.
+- `named` — `true` = a user "Name window…" window, `false` = tab-title-derived. **Suggested UI: render
+  named windows first (sorted), a separator, then unnamed** — that's what the kvscf app does.
+- `tab_count` — best-effort tab count for unnamed windows (`null` for named). Optional badge.
+- `z_index` — enumeration order (0 = most-recently-active); optional sort signal.
+
+The kvscf app renders named windows in an Edge-teal accent; unnamed muted. Match if you like.
+
 ## Reference
 
 - kvscf publisher/subscriber: `crates/kvscf-app/src/remote.rs` in this repo.

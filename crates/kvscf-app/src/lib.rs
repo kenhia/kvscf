@@ -28,7 +28,14 @@ use eframe::egui;
 use egui::text::LayoutJob;
 use egui::{Color32, FontFamily, FontId, Sense, TextFormat, ViewportCommand, WindowLevel};
 
-use kvscf_core::{close_window, focus_with, scan, App, Instance, Remote};
+use kvscf_core::{close_window, focus_with, scan_all, App, EdgeWindow, Instance, Remote};
+
+/// Which source the app is showing (WI #474).
+#[derive(PartialEq, Clone, Copy)]
+enum Tab {
+    Code,
+    Edge,
+}
 
 /// Update Assist flow state (WI #470).
 #[derive(PartialEq)]
@@ -106,6 +113,8 @@ pub fn run() -> eframe::Result<()> {
 
 struct KvscfApp {
     items: Vec<Instance>,
+    edge: Vec<EdgeWindow>,
+    tab: Tab,
     last_scan: Instant,
     maximize_on_focus: bool,
     auto_hide: bool,
@@ -130,6 +139,8 @@ impl KvscfApp {
         let s = settings::load();
         let mut app = KvscfApp {
             items: Vec::new(),
+            edge: Vec::new(),
+            tab: Tab::Code,
             last_scan: Instant::now() - SCAN_INTERVAL, // force an immediate scan
             maximize_on_focus: s.maximize_on_focus,
             auto_hide: s.auto_hide,
@@ -152,16 +163,23 @@ impl KvscfApp {
     }
 
     fn refresh(&mut self) {
-        let mut items = scan();
-        // Single, fastest-to-scan ordering: lowercased workspace name (hosts interleaved).
+        let (mut items, mut edge) = scan_all();
+        // VS Code: fastest-to-scan ordering — lowercased workspace name (hosts interleaved).
         items.sort_by_key(|i| i.workspace.to_lowercase());
+        // Edge: named windows first, then by label (both alphabetical).
+        edge.sort_by(|a, b| {
+            b.named
+                .cmp(&a.named)
+                .then_with(|| a.label.to_lowercase().cmp(&b.label.to_lowercase()))
+        });
         self.items = items;
+        self.edge = edge;
         self.last_scan = Instant::now();
 
-        // Publish the fresh list to kdeskdash (no-op in the local build).
+        // Publish the fresh lists to kdeskdash (no-op in the local build).
         #[cfg(feature = "remote")]
         if let Some(ch) = &self.channel {
-            ch.publish(&self.items);
+            ch.publish(&self.items, &self.edge);
         }
     }
 
@@ -296,6 +314,23 @@ impl eframe::App for KvscfApp {
             self.refresh();
         }
 
+        egui::TopBottomPanel::top("tabs").show(ctx, |ui| {
+            ui.add_space(3.0);
+            ui.horizontal(|ui| {
+                ui.selectable_value(
+                    &mut self.tab,
+                    Tab::Code,
+                    format!("Code ({})", self.items.len()),
+                );
+                ui.selectable_value(
+                    &mut self.tab,
+                    Tab::Edge,
+                    format!("Edge ({})", self.edge.len()),
+                );
+            });
+            ui.add_space(2.0);
+        });
+
         egui::TopBottomPanel::top("header").show(ctx, |ui| {
             ui.add_space(3.0);
             let mut changed = false;
@@ -319,7 +354,11 @@ impl eframe::App for KvscfApp {
                 });
             });
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(format!("{} window(s)", self.items.len())).weak());
+                let n = match self.tab {
+                    Tab::Code => self.items.len(),
+                    Tab::Edge => self.edge.len(),
+                };
+                ui.label(egui::RichText::new(format!("{n} window(s)")).weak());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("⟳").on_hover_text("Refresh now").clicked() {
                         self.refresh();
@@ -332,43 +371,46 @@ impl eframe::App for KvscfApp {
             ui.add_space(3.0);
         });
 
-        egui::TopBottomPanel::bottom("update_assist").show(ctx, |ui| {
-            ui.add_space(4.0);
-            match self.ua_state {
-                UaState::Idle => {
-                    ui.horizontal(|ui| {
-                        if ui
-                            .button("Save set")
-                            .on_hover_text("Save the currently open windows as 'last'")
-                            .clicked()
-                        {
-                            let (resolved, _) = winset::resolve_open_set();
-                            let entries: Vec<_> = resolved.into_iter().map(|(_, e)| e).collect();
-                            let n = entries.len();
-                            self.ua_status = match winset::save_set("last", &entries) {
-                                Ok(()) => format!("saved {n}"),
-                                Err(_) => "save failed".into(),
-                            };
-                        }
-                        if ui
-                            .button("Restore")
-                            .on_hover_text("Relaunch the saved 'last' set")
-                            .clicked()
-                        {
-                            match winset::load_set("last") {
-                                Some(set) => {
-                                    let n = set.len();
-                                    winset::relaunch(set, Duration::from_millis(1500));
-                                    self.ua_status = format!("relaunching {n}…");
-                                }
-                                None => self.ua_status = "no saved set".into(),
+        // Save/Restore + Update Assist are VS-Code-specific — Code tab only.
+        if self.tab == Tab::Code {
+            egui::TopBottomPanel::bottom("update_assist").show(ctx, |ui| {
+                ui.add_space(4.0);
+                match self.ua_state {
+                    UaState::Idle => {
+                        ui.horizontal(|ui| {
+                            if ui
+                                .button("Save set")
+                                .on_hover_text("Save the currently open windows as 'last'")
+                                .clicked()
+                            {
+                                let (resolved, _) = winset::resolve_open_set();
+                                let entries: Vec<_> =
+                                    resolved.into_iter().map(|(_, e)| e).collect();
+                                let n = entries.len();
+                                self.ua_status = match winset::save_set("last", &entries) {
+                                    Ok(()) => format!("saved {n}"),
+                                    Err(_) => "save failed".into(),
+                                };
                             }
+                            if ui
+                                .button("Restore")
+                                .on_hover_text("Relaunch the saved 'last' set")
+                                .clicked()
+                            {
+                                match winset::load_set("last") {
+                                    Some(set) => {
+                                        let n = set.len();
+                                        winset::relaunch(set, Duration::from_millis(1500));
+                                        self.ua_status = format!("relaunching {n}…");
+                                    }
+                                    None => self.ua_status = "no saved set".into(),
+                                }
+                            }
+                        });
+                        if !self.ua_status.is_empty() {
+                            ui.label(egui::RichText::new(&self.ua_status).small().weak());
                         }
-                    });
-                    if !self.ua_status.is_empty() {
-                        ui.label(egui::RichText::new(&self.ua_status).small().weak());
-                    }
-                    if ui
+                        if ui
                         .button("Update Assist")
                         .on_hover_text(
                             "Insiders update helper: close all but one window per host×build,\n\
@@ -379,70 +421,107 @@ impl eframe::App for KvscfApp {
                         self.ua_status.clear();
                         self.ua_state = UaState::ConfirmClose;
                     }
-                }
-                UaState::ConfirmClose => {
-                    ui.label(
-                        egui::RichText::new("Keep one window per host × build, close the rest?")
+                    }
+                    UaState::ConfirmClose => {
+                        ui.label(
+                            egui::RichText::new(
+                                "Keep one window per host × build, close the rest?",
+                            )
                             .small()
                             .weak(),
-                    );
-                    ui.horizontal(|ui| {
-                        if ui.button("Close Extras").clicked() {
-                            self.ua_close_extras();
-                        }
-                        if ui.button("Cancel").clicked() {
-                            self.ua_cancel();
-                        }
-                    });
+                        );
+                        ui.horizontal(|ui| {
+                            if ui.button("Close Extras").clicked() {
+                                self.ua_close_extras();
+                            }
+                            if ui.button("Cancel").clicked() {
+                                self.ua_cancel();
+                            }
+                        });
+                    }
+                    UaState::ReadyRelaunch => {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "Closed {}. Your turn — start the update(s), then click Relaunch.",
+                                self.ua_closed
+                            ))
+                            .small(),
+                        );
+                        ui.horizontal(|ui| {
+                            if ui.button("Relaunch").clicked() {
+                                self.ua_relaunch_now();
+                            }
+                            if ui.button("Cancel").clicked() {
+                                self.ua_cancel();
+                            }
+                        });
+                    }
                 }
-                UaState::ReadyRelaunch => {
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "Closed {}. Your turn — start the update(s), then click Relaunch.",
-                            self.ua_closed
-                        ))
-                        .small(),
-                    );
-                    ui.horizontal(|ui| {
-                        if ui.button("Relaunch").clicked() {
-                            self.ua_relaunch_now();
-                        }
-                        if ui.button("Cancel").clicked() {
-                            self.ua_cancel();
-                        }
-                    });
-                }
-            }
-            ui.add_space(4.0);
-        });
+                ui.add_space(4.0);
+            });
+        }
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            if self.items.is_empty() {
-                ui.add_space(12.0);
-                ui.weak("No VS Code windows open.");
-                return;
+            let mut clicked: Option<i64> = None;
+            match self.tab {
+                Tab::Code => {
+                    if self.items.is_empty() {
+                        ui.add_space(12.0);
+                        ui.weak("No VS Code windows open.");
+                    } else {
+                        let name_font = self.name_font();
+                        let host_font = self.host_font();
+                        egui::ScrollArea::vertical()
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                ui.spacing_mut().item_spacing.y = 1.0;
+                                for item in &self.items {
+                                    if draw_row(ui, item, &name_font, &host_font).clicked() {
+                                        clicked = Some(item.hwnd);
+                                    }
+                                }
+                            });
+                    }
+                }
+                Tab::Edge => {
+                    if self.edge.is_empty() {
+                        ui.add_space(12.0);
+                        ui.weak("No Edge windows open.");
+                    } else {
+                        let name_font = self.name_font();
+                        let dark = ui.visuals().dark_mode;
+                        let has_named = self.edge.iter().any(|w| w.named);
+                        let has_unnamed = self.edge.iter().any(|w| !w.named);
+                        egui::ScrollArea::vertical()
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                ui.spacing_mut().item_spacing.y = 1.0;
+                                for w in self.edge.iter().filter(|w| w.named) {
+                                    if draw_edge_row(ui, w, &name_font, dark).clicked() {
+                                        clicked = Some(w.hwnd);
+                                    }
+                                }
+                                if has_named && has_unnamed {
+                                    ui.add_space(4.0);
+                                    ui.separator();
+                                    ui.add_space(2.0);
+                                }
+                                for w in self.edge.iter().filter(|w| !w.named) {
+                                    if draw_edge_row(ui, w, &name_font, dark).clicked() {
+                                        clicked = Some(w.hwnd);
+                                    }
+                                }
+                            });
+                    }
+                }
             }
-            let name_font = self.name_font();
-            let host_font = self.host_font();
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = 1.0;
-                    let mut clicked: Option<i64> = None;
-                    for item in &self.items {
-                        if draw_row(ui, item, &name_font, &host_font).clicked() {
-                            clicked = Some(item.hwnd);
-                        }
-                    }
-                    if let Some(hwnd) = clicked {
-                        focus_with(hwnd, self.maximize_on_focus);
-                        // Auto-hide only makes sense as a floating window; a docked bar keeps
-                        // its reserved space.
-                        if self.auto_hide && !self.docked {
-                            self.hide_at = Some(Instant::now() + AUTO_HIDE_DELAY);
-                        }
-                    }
-                });
+            if let Some(hwnd) = clicked {
+                focus_with(hwnd, self.maximize_on_focus);
+                // Auto-hide only makes sense as a floating window; a docked bar keeps its space.
+                if self.auto_hide && !self.docked {
+                    self.hide_at = Some(Instant::now() + AUTO_HIDE_DELAY);
+                }
+            }
         });
 
         // Keep polling / countdown ticking even when idle.
@@ -562,6 +641,73 @@ fn host_color(dark: bool) -> Color32 {
         Color32::from_gray(150)
     } else {
         Color32::from_gray(110)
+    }
+}
+
+/// Draw one Edge window row — named windows in an Edge-teal accent, unnamed (tab-derived) muted.
+fn draw_edge_row(
+    ui: &mut egui::Ui,
+    w: &EdgeWindow,
+    name_font: &FontId,
+    dark: bool,
+) -> egui::Response {
+    let width = ui.available_width();
+    let pad = 8.0;
+    let (color, font) = if w.named {
+        (edge_named_color(dark), name_font.clone())
+    } else {
+        (edge_unnamed_color(dark), FontId::proportional(13.5))
+    };
+
+    let mut job = LayoutJob::default();
+    job.append(
+        &w.label,
+        0.0,
+        TextFormat {
+            color,
+            font_id: font,
+            ..Default::default()
+        },
+    );
+    job.wrap.max_width = width - pad * 2.0;
+    job.wrap.max_rows = 1;
+    job.wrap.break_anywhere = false;
+    job.wrap.overflow_character = Some('…');
+
+    let galley = ui.fonts(|f| f.layout_job(job));
+    let row_h = (galley.size().y + 8.0).max(24.0);
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, row_h), Sense::click());
+    if ui.is_rect_visible(rect) {
+        if resp.hovered() {
+            ui.painter()
+                .rect_filled(rect, 4.0, ui.visuals().widgets.hovered.weak_bg_fill);
+        }
+        ui.painter().galley(
+            egui::pos2(rect.left() + pad, rect.center().y - galley.size().y / 2.0),
+            galley,
+            Color32::PLACEHOLDER,
+        );
+    }
+    let tabs = w.tab_count.filter(|&n| n > 1);
+    match tabs {
+        Some(n) => resp.on_hover_text(format!("{} — {} tabs", w.label, n)),
+        None => resp.on_hover_text(&w.label),
+    }
+}
+
+fn edge_named_color(dark: bool) -> Color32 {
+    if dark {
+        Color32::from_rgb(72, 194, 205) // Edge teal
+    } else {
+        Color32::from_rgb(20, 120, 130)
+    }
+}
+
+fn edge_unnamed_color(dark: bool) -> Color32 {
+    if dark {
+        Color32::from_gray(190)
+    } else {
+        Color32::from_gray(70)
     }
 }
 
