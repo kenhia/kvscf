@@ -16,9 +16,24 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Format check
         run: cargo fmt --all --check
-      - name: Clippy
+
+      # Default members (kvscf-core, kvscf-app [remote on], kvscf). Excludes kvscf-local so
+      # feature unification doesn't turn `remote` on for the shared kvscf-app here.
+      - name: Clippy (default / remote on)
         run: cargo clippy --all-targets -- -D warnings
-      - name: Build
+      - name: Build (default / remote on)
         run: cargo build --all-targets
       - name: Test
         run: cargo test
+
+      # No-comms build in isolation (remote off). Kept green so the local path can't rot.
+      - name: Clippy (kvscf-local / remote off)
+        run: cargo clippy -p kvscf-local --all-targets -- -D warnings
+      - name: Build (kvscf-local / remote off)
+        run: cargo build -p kvscf-local
+      - name: Verify kvscf-local has no remote
+        shell: bash
+        run: |
+          out="$(cargo run -q -p kvscf-local -- --build-info)"
+          echo "$out"
+          echo "$out" | grep -q "remote=false" || { echo "kvscf-local unexpectedly has remote enabled"; exit 1; }

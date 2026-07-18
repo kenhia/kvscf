@@ -1,0 +1,16 @@
+[package]
+name = "kvscf-local"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "kvscf-local — VS Code window focuser with NO external communication (kwork build)."
+
+[[bin]]
+name = "kvscf-local"
+path = "src/main.rs"
+
+# `default-features = false` → `remote` off: the kdeskdash channel is not compiled in at all.
+[dependencies]
+kvscf-app = { path = "../kvscf-app", default-features = false }

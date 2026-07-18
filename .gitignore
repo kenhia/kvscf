@@ -10,3 +10,5 @@ cleo-config.toml
 # editor / OS cruft
 .DS_Store
 Thumbs.db
+
+.env

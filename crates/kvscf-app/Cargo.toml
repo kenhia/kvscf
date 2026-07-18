@@ -1,0 +1,38 @@
+[package]
+name = "kvscf-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "kvscf app library: the nav-rail UI over kvscf-core. The `remote` feature gates the kdeskdash channel."
+
+[lib]
+name = "kvscf_app"
+path = "src/lib.rs"
+
+[features]
+default = ["remote"]
+# All sprint-003 kdeskdash comms live behind this feature (WI #471). The comms deps are
+# optional and enabled only here, so a no-`remote` build doesn't compile them at all.
+remote = ["dep:redis", "dep:serde_json", "dep:dotenvy"]
+
+[dependencies]
+kvscf-core = { path = "../kvscf-core" }
+eframe = { version = "0.29", features = ["persistence"] }
+raw-window-handle = "0.6"
+
+# remote-only
+redis = { version = "0.27", optional = true }
+serde_json = { version = "1", optional = true }
+dotenvy = { version = "0.15", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.52"
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
