@@ -39,7 +39,14 @@ set (~1–2 s apart). **Live test** with the real pending Code + Insiders update
   Close Extras (keep one per remote host×build, close rest, locals untouched, survivor = lowest
   z_index), staggered Relaunch (~1.5s). Plus **Save set / Restore** (persisted "last" set under
   `%APPDATA%\kvscf\sets\`). Clippy-clean both builds.
-- **Pending:** the live Update Assist test with the real Code + Insiders updates.
+- **Live test PASSED (2026-07-18):** Ken ran the full flow with real Code + Insiders updates —
+  Close Extras → update → Relaunch brought back **18/18** instances; both editions updated + reconnected
+  cleanly.
+- **Config bug found + fixed (surfaced by the real `C:\tools\bin` deploy):** the kdeskdash channel
+  token loaded only from a cwd/exe-dir `.env`, so a normal pinned launch (cwd ≠ repo, no `.env` beside
+  the exe) silently disabled publishing (kdeskdash showed "no active editors"). Fix: `remote::Config`
+  now reads `KVSCF_TOKEN` from **`HKCU\Software\kenhia\kvscf` (preferred)**, `.env`/env as fallback.
+  Verified publishing from the registry token alone. `C:\tools\bin\.env` kept as Ken's backup.
 
 ## Notes
 
