@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="256" height="256">
+  <!-- kvscf app icon — "focus reticle" (concept D2): green corner brackets locking onto a
+       dark-mode window with Windows-style controls (red close). Master art; assets/kvscf.ico
+       and kvscf-256.png are generated from this (see assets/README.md). -->
+  <rect x="8" y="8" width="112" height="112" rx="26" fill="#1C1F26"/>
+  <rect x="41" y="47" width="46" height="36" rx="7" fill="#2C2C2A" stroke="#3E3E3A" stroke-width="1"/>
+  <rect x="62" y="51.5" width="6" height="6" rx="1" fill="#6E7681"/>
+  <rect x="71" y="51.5" width="6" height="6" rx="1" fill="#6E7681"/>
+  <rect x="80" y="51.5" width="6" height="6" rx="1" fill="#C0453B"/>
+  <rect x="47" y="65" width="32" height="3" rx="1.5" fill="#4C4C48"/>
+  <rect x="47" y="72" width="24" height="3" rx="1.5" fill="#4C4C48"/>
+  <g fill="none" stroke="#38BE84" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M52,35 L35,35 L35,50"/>
+    <path d="M76,35 L93,35 L93,50"/>
+    <path d="M52,95 L35,95 L35,80"/>
+    <path d="M76,95 L93,95 L93,80"/>
+  </g>
+</svg>

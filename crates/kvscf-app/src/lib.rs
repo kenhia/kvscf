@@ -59,13 +59,21 @@ pub fn run() -> eframe::Result<()> {
         return Ok(());
     }
 
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title(APP_TITLE)
+        .with_inner_size([RAIL_WIDTH, RAIL_HEIGHT])
+        .with_min_inner_size([160.0, 240.0])
+        .with_position([0.0, 0.0]);
+    // Runtime window/taskbar icon (the exe file icon is embedded separately via build.rs).
+    if let Ok(icon) =
+        eframe::icon_data::from_png_bytes(include_bytes!("../../../assets/kvscf-256.png"))
+    {
+        viewport = viewport.with_icon(Arc::new(icon));
+    }
+
     let native_options = eframe::NativeOptions {
         persist_window: true, // remember size/position across runs
-        viewport: egui::ViewportBuilder::default()
-            .with_title(APP_TITLE)
-            .with_inner_size([RAIL_WIDTH, RAIL_HEIGHT])
-            .with_min_inner_size([160.0, 240.0])
-            .with_position([0.0, 0.0]),
+        viewport,
         ..Default::default()
     };
     eframe::run_native(
