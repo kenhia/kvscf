@@ -87,6 +87,8 @@ struct KvscfApp {
     appbar_registered: bool,
     mode_applied: bool,
     last_dock_assert: Instant,
+    #[cfg(feature = "remote")]
+    channel: Option<remote::Channel>,
 }
 
 impl KvscfApp {
@@ -105,6 +107,8 @@ impl KvscfApp {
             appbar_registered: false,
             mode_applied: false,
             last_dock_assert: Instant::now(),
+            #[cfg(feature = "remote")]
+            channel: remote::Channel::start(),
         };
         app.refresh();
         app
@@ -116,6 +120,12 @@ impl KvscfApp {
         items.sort_by_key(|i| i.workspace.to_lowercase());
         self.items = items;
         self.last_scan = Instant::now();
+
+        // Publish the fresh list to kdeskdash (no-op in the local build).
+        #[cfg(feature = "remote")]
+        if let Some(ch) = &self.channel {
+            ch.publish(&self.items);
+        }
     }
 
     fn save_settings(&self) {
