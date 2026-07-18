@@ -3,6 +3,10 @@
 How the pieces fit and the mechanics behind the contracts. See [PLAN.md](../PLAN.md) for the
 original design rationale and `sprints/` for the sprint-by-sprint story.
 
+> The remote/deploy specifics below (the Redis host, machine names like `cleo`/`kai`/`rpidash2`)
+> describe the author's homelab. The local window switcher (`kvscf-local`) works standalone with none
+> of it — see the [README](../README.md).
+
 ## Crates
 
 ```
