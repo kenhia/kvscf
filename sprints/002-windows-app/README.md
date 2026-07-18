@@ -82,7 +82,8 @@ a service (contrast `kpidashclient-win`).
 - [ ] Minimize to tray + restore (`tray-icon`) — deferred; less critical now the window is a normal,
       non-top window (and a docked bar likely doesn't want a tray).
 - [ ] Global restore hotkey — deferred with tray.
-- [ ] Single-instance guard; clean shutdown.
+- [x] Single-instance guard: named mutex (`Local\kvscf-single-instance`); a 2nd launch exits
+      immediately (verified: ~162 ms, code 0, no window). Prevents two docked bars fighting the edge.
 
 ## Verified with Ken (2026-07-18)
 

@@ -33,6 +33,12 @@ const DOCK_REASSERT: Duration = Duration::from_secs(1);
 const BOLD_FAMILY: &str = "kvscf-bold";
 
 fn main() -> eframe::Result<()> {
+    // Single instance only — two docked bars would fight over the reserved edge.
+    #[cfg(windows)]
+    if !single_instance::acquire() {
+        return Ok(());
+    }
+
     let native_options = eframe::NativeOptions {
         persist_window: true, // remember size/position across runs
         viewport: egui::ViewportBuilder::default()
@@ -399,6 +405,33 @@ fn install_bold_font(ctx: &egui::Context) -> bool {
         .push(BOLD_FAMILY.to_owned());
     ctx.set_fonts(fonts);
     true
+}
+
+/// Named-mutex single-instance guard. Returns `true` if this is the first instance.
+#[cfg(windows)]
+mod single_instance {
+    use windows::core::w;
+    use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
+    use windows::Win32::System::Threading::CreateMutexW;
+
+    pub fn acquire() -> bool {
+        unsafe {
+            match CreateMutexW(None, true, w!("Local\\kvscf-single-instance")) {
+                Ok(handle) => {
+                    if GetLastError() == ERROR_ALREADY_EXISTS {
+                        // Another instance owns the mutex.
+                        return false;
+                    }
+                    // HANDLE is Copy with no Drop, so the OS mutex handle stays open for the
+                    // whole process lifetime (we never CloseHandle it) — exactly what we want.
+                    let _ = handle;
+                    true
+                }
+                // If we can't create the mutex, fail open rather than block startup.
+                Err(_) => true,
+            }
+        }
+    }
 }
 
 #[cfg(windows)]
