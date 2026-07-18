@@ -48,8 +48,11 @@ mutex enforces a single instance.
 
 The channel talks to the kdeskdash desk dashboard over the shared **"claude-feed" Redis** at
 `192.168.1.144:6380` (rpidash2; LAN, no Redis auth, ephemeral: 32mb / allkeys-lru / no persistence).
-Redis being open, the app-level **`KVSCF_TOKEN`** (from `.env`) gates the only action — the focus
-command. Endpoint/token are read from env or a `.env` file (cwd or next to the exe).
+Redis being open, the app-level **`KVSCF_TOKEN`** gates the only action — the focus command. The token
+is read from **`HKCU\Software\kenhia\kvscf` (preferred)**, falling back to env / a `.env` file (cwd or
+next to the exe) — the registry path is robust to where the exe is launched from (a pinned launch from
+`C:\tools\bin` has no cwd/exe-dir `.env`). Endpoint host/port take env overrides, else the pinned
+rpidash2 defaults.
 
 ```mermaid
 flowchart LR
@@ -71,6 +74,22 @@ flowchart LR
 
 The wire contract (keys, fields, payloads) is specified for the kdeskdash side in
 [kdeskdash-vscode-mode.md](kdeskdash-vscode-mode.md).
+
+## Window sets & Update Assist (`winset`)
+
+`kvscf-app::winset` resolves each open window to its **full folder URI** by matching (workspace basename
++ remote host + build) against VS Code's own `workspaceStorage/*/workspace.json` (most-recent `mtime`
+wins). That URI is what gets relaunched — a local `code`/`code-insiders --folder-uri <uri>` (kvscf runs
+on cleo, so no krcmd round-trip).
+
+- **Save / Restore** (WI #469): persist the resolved set as `%APPDATA%\kvscf\sets\last.json`; Restore
+  relaunches it (staggered).
+- **Update Assist** (WI #470): a bottom-panel flow for the near-daily Insiders remote-update dance —
+  **Close Extras** keeps one window per (remote host × build) and closes the rest
+  (`kvscf-core::close_window` = `WM_CLOSE`; locals untouched, survivor = most-recently-active); you run
+  the update(s); **Relaunch** reopens the closed set, staggered.
+
+Both live in the app library, so they work in `kvscf` and `kvscf-local` alike.
 
 ## kwork build
 
