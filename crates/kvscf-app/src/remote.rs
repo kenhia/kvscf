@@ -17,7 +17,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use kvscf_core::{focus_with, App, Instance, Remote};
+use kvscf_core::{focus_with, App, EdgeWindow, Instance, Remote};
 
 const DEFAULT_HOST: &str = "192.168.1.144"; // rpidash2 LAN IP (pinned, per handoff)
 const DEFAULT_PORT: u16 = 6380;
@@ -71,14 +71,24 @@ impl Config {
         format!("kvscf:instances:{}", self.this_host)
     }
 
+    fn edge_key(&self) -> String {
+        format!("kvscf:edge:{}", self.this_host)
+    }
+
     fn focus_channel(&self) -> String {
         format!("kvscf:focus:{}", self.this_host)
     }
 }
 
+/// One published snapshot: the VS Code instances and the Edge windows.
+struct Snapshot {
+    instances: Vec<Instance>,
+    edge: Vec<EdgeWindow>,
+}
+
 /// The app-facing handle. Owns the sender that feeds the publisher thread.
 pub struct Channel {
-    tx: Sender<Vec<Instance>>,
+    tx: Sender<Snapshot>,
     host: String,
 }
 
@@ -88,7 +98,7 @@ impl Channel {
     pub fn start() -> Option<Channel> {
         let cfg = Config::load()?;
         let host = cfg.this_host.clone();
-        let (tx, rx) = mpsc::channel::<Vec<Instance>>();
+        let (tx, rx) = mpsc::channel::<Snapshot>();
 
         {
             let cfg = cfg.clone();
@@ -113,9 +123,12 @@ impl Channel {
         Some(Channel { tx, host })
     }
 
-    /// Hand the latest instance list to the publisher thread (non-blocking).
-    pub fn publish(&self, items: &[Instance]) {
-        let _ = self.tx.send(items.to_vec());
+    /// Hand the latest window lists to the publisher thread (non-blocking).
+    pub fn publish(&self, items: &[Instance], edge: &[EdgeWindow]) {
+        let _ = self.tx.send(Snapshot {
+            instances: items.to_vec(),
+            edge: edge.to_vec(),
+        });
     }
 
     pub fn host(&self) -> &str {
@@ -123,9 +136,10 @@ impl Channel {
     }
 }
 
-/// Publisher: SET the instance list with a TTL on every snapshot the app sends.
-fn publisher_loop(cfg: Config, rx: Receiver<Vec<Instance>>) {
-    let key = cfg.instances_key();
+/// Publisher: SET the instance + edge lists with a TTL on every snapshot the app sends.
+fn publisher_loop(cfg: Config, rx: Receiver<Snapshot>) {
+    let inst_key = cfg.instances_key();
+    let edge_key = cfg.edge_key();
     loop {
         let client = match redis::Client::open(cfg.url()) {
             Ok(c) => c,
@@ -153,14 +167,21 @@ fn publisher_loop(cfg: Config, rx: Receiver<Vec<Instance>>) {
                 latest = v;
             }
 
-            let payload = build_instances_json(&cfg, &latest);
-            let res: redis::RedisResult<()> = redis::cmd("SET")
-                .arg(&key)
-                .arg(payload)
-                .arg("EX")
-                .arg(INSTANCES_TTL_SECS)
-                .query(&mut con);
-            if res.is_err() {
+            let set = |key: &str, payload: String, con: &mut redis::Connection| -> bool {
+                redis::cmd("SET")
+                    .arg(key)
+                    .arg(payload)
+                    .arg("EX")
+                    .arg(INSTANCES_TTL_SECS)
+                    .query::<()>(con)
+                    .is_ok()
+            };
+            let ok = set(
+                &inst_key,
+                build_instances_json(&cfg, &latest.instances),
+                &mut con,
+            ) && set(&edge_key, build_edge_json(&cfg, &latest.edge), &mut con);
+            if !ok {
                 break; // drop out to reconnect
             }
         }
@@ -229,6 +250,29 @@ fn build_instances_json(cfg: &Config, items: &[Instance]) -> String {
         "host": cfg.this_host,
         "ts": now_secs(),
         "instances": instances,
+    })
+    .to_string()
+}
+
+/// Build the Edge-window JSON payload (WI #474). Same focus channel — `id` is the HWND.
+fn build_edge_json(cfg: &Config, windows: &[EdgeWindow]) -> String {
+    let items: Vec<serde_json::Value> = windows
+        .iter()
+        .map(|w| {
+            serde_json::json!({
+                "id": w.hwnd.to_string(),
+                "label": w.label,
+                "named": w.named,
+                "tab_count": w.tab_count,
+                "z_index": w.z_index,
+            })
+        })
+        .collect();
+
+    serde_json::json!({
+        "host": cfg.this_host,
+        "ts": now_secs(),
+        "windows": items,
     })
     .to_string()
 }

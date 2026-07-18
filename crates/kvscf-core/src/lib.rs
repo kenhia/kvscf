@@ -6,7 +6,7 @@
 
 pub mod parse;
 
-pub use parse::{parse_title, ParsedTitle};
+pub use parse::{parse_edge_title, parse_title, EdgeTitle, ParsedTitle};
 
 #[cfg(windows)]
 mod enumerate;
@@ -14,7 +14,7 @@ mod enumerate;
 mod focus;
 
 #[cfg(windows)]
-pub use enumerate::scan;
+pub use enumerate::{scan, scan_all, scan_edge};
 #[cfg(windows)]
 pub use focus::{close_window, focus, focus_unmitigated, focus_with};
 
@@ -22,6 +22,14 @@ pub use focus::{close_window, focus, focus_unmitigated, focus_with};
 #[cfg(not(windows))]
 pub fn scan() -> Vec<Instance> {
     Vec::new()
+}
+#[cfg(not(windows))]
+pub fn scan_edge() -> Vec<EdgeWindow> {
+    Vec::new()
+}
+#[cfg(not(windows))]
+pub fn scan_all() -> (Vec<Instance>, Vec<EdgeWindow>) {
+    (Vec::new(), Vec::new())
 }
 #[cfg(not(windows))]
 pub fn focus(_hwnd: i64) -> bool {
@@ -121,4 +129,15 @@ impl Instance {
             None => self.workspace.clone(),
         }
     }
+}
+
+/// One open Microsoft Edge window (WI #474). `named` distinguishes a user-set window name from a
+/// tab-title-derived label.
+#[derive(Debug, Clone)]
+pub struct EdgeWindow {
+    pub hwnd: i64,
+    pub label: String,
+    pub named: bool,
+    pub tab_count: Option<u32>,
+    pub z_index: usize,
 }

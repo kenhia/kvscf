@@ -1,8 +1,8 @@
-//! Win32 enumeration of open VS Code / Insiders windows.
+//! Win32 enumeration of open windows, filtered per app.
 //!
-//! `Get-Process` is insufficient (all VS Code windows share one process, one
-//! `MainWindowHandle`), so we walk every top-level window with `EnumWindows`, keep the
-//! visible + titled ones whose process image is a VS Code build, and parse each title.
+//! `Get-Process` is insufficient — VS Code and Edge each host many windows in one process — so we
+//! walk every top-level window with `EnumWindows` and resolve each window's process image, then
+//! dispatch to the VS Code or Edge parser.
 
 use windows::core::PWSTR;
 use windows::Win32::Foundation::{CloseHandle, BOOL, HWND, LPARAM, TRUE};
@@ -13,8 +13,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible,
 };
 
-use crate::parse::parse_title;
-use crate::{App, Instance};
+use crate::parse::{parse_edge_title, parse_title};
+use crate::{App, EdgeWindow, Instance};
 
 struct Raw {
     hwnd: isize,
@@ -22,35 +22,91 @@ struct Raw {
     title: String,
 }
 
-/// Enumerate open VS Code / Insiders windows in Z-order (topmost first).
-pub fn scan() -> Vec<Instance> {
+/// A visible, titled top-level window with its process image resolved.
+struct ImagedWin {
+    hwnd: i64,
+    image: String,
+    title: String,
+}
+
+/// Every visible, titled top-level window (in Z-order), with its process image basename.
+fn raw_windows() -> Vec<ImagedWin> {
     let mut raws: Vec<Raw> = Vec::new();
     unsafe {
         // EnumWindows returns Err if the callback ever returns FALSE; we always return TRUE.
         let _ = EnumWindows(Some(enum_proc), LPARAM(&mut raws as *mut _ as isize));
     }
+    raws.into_iter()
+        .filter_map(|raw| {
+            let image = process_image_basename(raw.pid)?;
+            Some(ImagedWin {
+                hwnd: raw.hwnd as i64,
+                image,
+                title: raw.title,
+            })
+        })
+        .collect()
+}
 
-    let mut out = Vec::new();
-    for (z, raw) in raws.into_iter().enumerate() {
-        let Some(image) = process_image_basename(raw.pid) else {
-            continue;
-        };
-        if !is_vscode_image(&image) {
-            continue;
+/// Open VS Code / Insiders windows.
+pub fn scan() -> Vec<Instance> {
+    raw_windows()
+        .into_iter()
+        .enumerate()
+        .filter_map(|(z, w)| vscode_instance(&w, z))
+        .collect()
+}
+
+/// Open Microsoft Edge windows.
+pub fn scan_edge() -> Vec<EdgeWindow> {
+    raw_windows()
+        .into_iter()
+        .enumerate()
+        .filter_map(|(z, w)| edge_window(&w, z))
+        .collect()
+}
+
+/// Both VS Code and Edge windows from a single enumeration pass (what the app uses).
+pub fn scan_all() -> (Vec<Instance>, Vec<EdgeWindow>) {
+    let mut code = Vec::new();
+    let mut edge = Vec::new();
+    for (z, w) in raw_windows().into_iter().enumerate() {
+        if let Some(inst) = vscode_instance(&w, z) {
+            code.push(inst);
+        } else if let Some(ew) = edge_window(&w, z) {
+            edge.push(ew);
         }
-        let Some(parsed) = parse_title(&raw.title) else {
-            continue;
-        };
-        out.push(Instance {
-            hwnd: raw.hwnd as i64,
-            app: App::from_image(&image),
-            workspace: parsed.workspace,
-            remote: parsed.remote,
-            active_file: parsed.active_file,
-            z_index: z,
-        });
     }
-    out
+    (code, edge)
+}
+
+fn vscode_instance(w: &ImagedWin, z: usize) -> Option<Instance> {
+    if !is_vscode_image(&w.image) {
+        return None;
+    }
+    let parsed = parse_title(&w.title)?;
+    Some(Instance {
+        hwnd: w.hwnd,
+        app: App::from_image(&w.image),
+        workspace: parsed.workspace,
+        remote: parsed.remote,
+        active_file: parsed.active_file,
+        z_index: z,
+    })
+}
+
+fn edge_window(w: &ImagedWin, z: usize) -> Option<EdgeWindow> {
+    if !is_edge_image(&w.image) {
+        return None;
+    }
+    let parsed = parse_edge_title(&w.title)?;
+    Some(EdgeWindow {
+        hwnd: w.hwnd,
+        label: parsed.label,
+        named: parsed.named,
+        tab_count: parsed.tab_count,
+        z_index: z,
+    })
 }
 
 fn is_vscode_image(image: &str) -> bool {
@@ -58,6 +114,10 @@ fn is_vscode_image(image: &str) -> bool {
         image.to_ascii_lowercase().as_str(),
         "code.exe" | "code - insiders.exe" | "code - exploration.exe"
     )
+}
+
+fn is_edge_image(image: &str) -> bool {
+    image.eq_ignore_ascii_case("msedge.exe")
 }
 
 unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
@@ -88,8 +148,7 @@ unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
     TRUE
 }
 
-/// Resolve a PID to its process image basename (e.g. `"Code - Insiders.exe"`).
-/// Uses `PROCESS_QUERY_LIMITED_INFORMATION`, which works for same-user processes unelevated.
+/// Resolve a PID to its process image basename (e.g. `"msedge.exe"`).
 fn process_image_basename(pid: u32) -> Option<String> {
     unsafe {
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;

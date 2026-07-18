@@ -95,6 +95,14 @@ on cleo, so no krcmd round-trip).
 
 Both live in the app library, so they work in `kvscf` and `kvscf-local` alike.
 
+## Edge tab (`Kind`)
+
+`kvscf-core` enumerates in one pass and dispatches by process image: VS Code → `Instance`, Edge →
+`EdgeWindow`. The app has a `[ Code | Edge ]` tab; the Edge tab lists Edge windows **named-first → a
+separator → unnamed** (the user's "Name window…" name is the window title; unnamed = active tab title —
+see `sprints/005-edge-research`). Focus/close reuse the same primitives. The remote channel also
+publishes Edge windows to `kvscf:edge:<host>` (the focus channel is HWND-generic, so it's unchanged).
+
 ## kwork build
 
 `kvscf-local` compiles with `remote` off — the entire `remote` module and its deps are absent from the
