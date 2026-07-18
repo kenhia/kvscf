@@ -1,6 +1,19 @@
 [workspace]
 resolver = "2"
-members = ["crates/kvscf-core", "crates/kvscf"]
+members = [
+    "crates/kvscf-core",
+    "crates/kvscf-app",
+    "crates/kvscf",
+    "crates/kvscf-local",
+]
+# kvscf-local is excluded from default builds: feature unification in a whole-workspace build
+# would turn `remote` ON for the shared kvscf-app, so its binary would contain comms code.
+# Build the comms-free artifact in isolation: `cargo build --release -p kvscf-local`.
+default-members = [
+    "crates/kvscf-core",
+    "crates/kvscf-app",
+    "crates/kvscf",
+]
 
 [workspace.package]
 version = "0.1.0"

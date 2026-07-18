@@ -15,12 +15,28 @@ See [PLAN.md](PLAN.md) for design and decisions, and `sprints/` for sprint-by-sp
 Status: **sprint 001 core built** — `kvscf-core` enumerates, parses, and focuses VS Code windows
 (11 tests, `windows-latest` CI). Sprints 002 (app) and 003 (remote) not started.
 
+## Crates
+
+- `kvscf-core` — enumerate / parse / focus library (+ a small `list`/`focus` CLI).
+- `kvscf-app` — the nav-rail app as a library. The **`remote`** feature (default on) gates the
+  sprint-003 kdeskdash channel.
+- `kvscf` — full app binary (`remote` on).
+- `kvscf-local` — no-comms app binary for `kwork` (`remote` off). Excluded from default builds.
+
 ## Build / run
 
 ```sh
-cargo build
+cargo build                 # kvscf-core, kvscf-app, kvscf (the full app)
 cargo test
-cargo run -p kvscf-core --bin kvscf-core -- list        # list open VS Code windows
+cargo run -p kvscf          # run the full app
+
+# Comms-free build for kwork — build in ISOLATION (feature unification means a whole-workspace
+# build would turn `remote` on for the shared kvscf-app):
+cargo build --release -p kvscf-local
+cargo run -p kvscf-local -- --build-info   # -> "kvscf-local (remote=false)"
+
+# core CLI
+cargo run -p kvscf-core --bin kvscf-core -- list         # list open VS Code windows
 cargo run -p kvscf-core --bin kvscf-core -- focus <hwnd> # foreground+focus one
 ```
 

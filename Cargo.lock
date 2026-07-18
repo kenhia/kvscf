@@ -1713,6 +1713,13 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 name = "kvscf"
 version = "0.1.0"
 dependencies = [
+ "kvscf-app",
+]
+
+[[package]]
+name = "kvscf-app"
+version = "0.1.0"
+dependencies = [
  "eframe",
  "kvscf-core",
  "raw-window-handle",
@@ -1725,6 +1732,13 @@ name = "kvscf-core"
 version = "0.1.0"
 dependencies = [
  "windows 0.58.0",
+]
+
+[[package]]
+name = "kvscf-local"
+version = "0.1.0"
+dependencies = [
+ "kvscf-app",
 ]
 
 [[package]]
