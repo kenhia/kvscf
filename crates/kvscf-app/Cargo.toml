@@ -13,18 +13,18 @@ path = "src/lib.rs"
 
 [features]
 default = ["remote"]
-# All sprint-003 kdeskdash comms live behind this feature (WI #471). The comms deps are
-# optional and enabled only here, so a no-`remote` build doesn't compile them at all.
-remote = ["dep:redis", "dep:serde_json", "dep:dotenvy"]
+# The kdeskdash comms live behind this feature (WI #471); its deps are optional and enabled
+# only here, so a no-`remote` build doesn't compile them at all.
+remote = ["dep:redis", "dep:dotenvy"]
 
 [dependencies]
 kvscf-core = { path = "../kvscf-core" }
 eframe = { version = "0.29", features = ["persistence"] }
 raw-window-handle = "0.6"
+serde_json = "1" # window-set resolution (workspaceStorage) — used in both builds
 
 # remote-only
 redis = { version = "0.27", optional = true }
-serde_json = { version = "1", optional = true }
 dotenvy = { version = "0.15", optional = true }
 
 [target.'cfg(windows)'.dependencies]
