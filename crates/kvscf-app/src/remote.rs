@@ -36,7 +36,8 @@ struct Config {
 
 impl Config {
     fn load() -> Option<Config> {
-        // Best-effort: pull KEY=VALUE from a .env in cwd or next to the exe.
+        // Best-effort: pull KEY=VALUE from a .env in cwd or next to the exe (for host/port
+        // overrides and as the token fallback).
         dotenvy::dotenv().ok();
         if let Ok(exe) = std::env::current_exe() {
             if let Some(dir) = exe.parent() {
@@ -44,10 +45,11 @@ impl Config {
             }
         }
 
-        // A token is mandatory — without it we can't authenticate focus commands, so the
-        // channel stays off rather than run open.
-        let token = std::env::var("KVSCF_TOKEN")
-            .ok()
+        // Token: registry (preferred — HKCU\Software\kenhia\kvscf) → env/.env fallback. It works
+        // regardless of where the exe is launched from (a pinned launch from C:\tools\bin has no
+        // cwd/exe-dir .env). Mandatory: without it the channel stays off rather than run open.
+        let token = token_from_registry()
+            .or_else(|| std::env::var("KVSCF_TOKEN").ok())
             .filter(|t| !t.is_empty())?;
 
         Some(Config {
@@ -282,4 +284,23 @@ fn computer_name() -> String {
         .filter(|v| !v.is_empty())
         .map(|v| v.to_lowercase())
         .unwrap_or_else(|| DEFAULT_HOST_NAME.to_string())
+}
+
+/// Preferred token source: `HKCU\Software\kenhia\kvscf` value `KVSCF_TOKEN`. Robust to launch
+/// location (unlike a cwd/exe-dir `.env`).
+#[cfg(windows)]
+fn token_from_registry() -> Option<String> {
+    use winreg::enums::HKEY_CURRENT_USER;
+    use winreg::RegKey;
+    RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey(r"Software\kenhia\kvscf")
+        .ok()?
+        .get_value::<String, _>("KVSCF_TOKEN")
+        .ok()
+        .filter(|t| !t.is_empty())
+}
+
+#[cfg(not(windows))]
+fn token_from_registry() -> Option<String> {
+    None
 }

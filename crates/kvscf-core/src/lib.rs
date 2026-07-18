@@ -16,7 +16,7 @@ mod focus;
 #[cfg(windows)]
 pub use enumerate::scan;
 #[cfg(windows)]
-pub use focus::{focus, focus_unmitigated, focus_with};
+pub use focus::{close_window, focus, focus_unmitigated, focus_with};
 
 // Portable stubs so the crate (and the parse tests) build on non-Windows hosts.
 #[cfg(not(windows))]
@@ -32,12 +32,16 @@ pub fn focus_with(_hwnd: i64, _maximize: bool) -> bool {
     false
 }
 #[cfg(not(windows))]
+pub fn close_window(_hwnd: i64) -> bool {
+    false
+}
+#[cfg(not(windows))]
 pub fn focus_unmitigated(_hwnd: i64) -> bool {
     false
 }
 
 /// Which VS Code build a window belongs to. Determined from the process image name.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum App {
     Stable,
     Insiders,

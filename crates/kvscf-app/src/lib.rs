@@ -16,6 +16,7 @@
 //! code at all, for `kwork`). See WI #471.
 
 mod dock;
+mod winset;
 
 #[cfg(feature = "remote")]
 mod remote;
@@ -27,7 +28,15 @@ use eframe::egui;
 use egui::text::LayoutJob;
 use egui::{Color32, FontFamily, FontId, Sense, TextFormat, ViewportCommand, WindowLevel};
 
-use kvscf_core::{focus_with, scan, App, Instance, Remote};
+use kvscf_core::{close_window, focus_with, scan, App, Instance, Remote};
+
+/// Update Assist flow state (WI #470).
+#[derive(PartialEq)]
+enum UaState {
+    Idle,
+    ConfirmClose,
+    ReadyRelaunch,
+}
 
 const RAIL_WIDTH: f32 = 280.0;
 const RAIL_HEIGHT: f32 = 1040.0;
@@ -50,6 +59,18 @@ pub fn run() -> eframe::Result<()> {
     // Headless probe to confirm which build this is (guards the feature-unification trap).
     if std::env::args().any(|a| a == "--build-info") {
         println!("{APP_TITLE} (remote={REMOTE_BUILD})");
+        return Ok(());
+    }
+
+    // Headless probe: resolve open windows -> folder URIs (WI #469 verification).
+    if std::env::args().any(|a| a == "--dump-set") {
+        let (resolved, unresolved) = winset::resolve_open_set();
+        for (_, e) in &resolved {
+            println!("{:<34} {:<10} {}", e.label, format!("{:?}", e.app), e.uri);
+        }
+        if !unresolved.is_empty() {
+            println!("\nUNRESOLVED ({}): {:?}", unresolved.len(), unresolved);
+        }
         return Ok(());
     }
 
@@ -95,6 +116,10 @@ struct KvscfApp {
     appbar_registered: bool,
     mode_applied: bool,
     last_dock_assert: Instant,
+    ua_state: UaState,
+    ua_relaunch: Vec<winset::SetEntry>,
+    ua_closed: usize,
+    ua_status: String,
     #[cfg(feature = "remote")]
     channel: Option<remote::Channel>,
 }
@@ -115,6 +140,10 @@ impl KvscfApp {
             appbar_registered: false,
             mode_applied: false,
             last_dock_assert: Instant::now(),
+            ua_state: UaState::Idle,
+            ua_relaunch: Vec::new(),
+            ua_closed: 0,
+            ua_status: String::new(),
             #[cfg(feature = "remote")]
             channel: remote::Channel::start(),
         };
@@ -173,6 +202,57 @@ impl KvscfApp {
         let width_px = (ctx.screen_rect().width() * ppp).round() as i32;
         dock::set_pos(hwnd, width_px);
         self.last_dock_assert = Instant::now();
+    }
+
+    /// Update Assist "Close Extras": keep one window per (remote host × build), close the rest,
+    /// and remember the closed set to relaunch after the update. Locals are left alone.
+    fn ua_close_extras(&mut self) {
+        use std::collections::HashMap;
+        let (resolved, _unresolved) = winset::resolve_open_set();
+        let mut groups: HashMap<(String, App), Vec<(Instance, winset::SetEntry)>> = HashMap::new();
+        for (inst, entry) in resolved {
+            // Only remote windows are grouped/closed; locals are left open.
+            if let Some(host) = inst.remote.host() {
+                groups
+                    .entry((host.to_string(), inst.app))
+                    .or_default()
+                    .push((inst, entry));
+            }
+        }
+        let mut relaunch = Vec::new();
+        let mut closed = 0;
+        for (_key, mut members) in groups {
+            if members.len() <= 1 {
+                continue; // nothing extra to close for this host×build
+            }
+            // Survivor = most-recently-active (lowest z_index); it carries the update.
+            members.sort_by_key(|(inst, _)| inst.z_index);
+            let mut iter = members.into_iter();
+            let _survivor = iter.next();
+            for (inst, entry) in iter {
+                if close_window(inst.hwnd) {
+                    closed += 1;
+                }
+                relaunch.push(entry);
+            }
+        }
+        self.ua_relaunch = relaunch;
+        self.ua_closed = closed;
+        self.ua_state = UaState::ReadyRelaunch;
+    }
+
+    /// Relaunch the closed set (staggered) and return to idle.
+    fn ua_relaunch_now(&mut self) {
+        let set = std::mem::take(&mut self.ua_relaunch);
+        winset::relaunch(set, Duration::from_millis(1500));
+        self.ua_closed = 0;
+        self.ua_state = UaState::Idle;
+    }
+
+    fn ua_cancel(&mut self) {
+        self.ua_relaunch.clear();
+        self.ua_closed = 0;
+        self.ua_state = UaState::Idle;
     }
 
     fn name_font(&self) -> FontId {
@@ -250,6 +330,90 @@ impl eframe::App for KvscfApp {
                 self.save_settings();
             }
             ui.add_space(3.0);
+        });
+
+        egui::TopBottomPanel::bottom("update_assist").show(ctx, |ui| {
+            ui.add_space(4.0);
+            match self.ua_state {
+                UaState::Idle => {
+                    ui.horizontal(|ui| {
+                        if ui
+                            .button("Save set")
+                            .on_hover_text("Save the currently open windows as 'last'")
+                            .clicked()
+                        {
+                            let (resolved, _) = winset::resolve_open_set();
+                            let entries: Vec<_> = resolved.into_iter().map(|(_, e)| e).collect();
+                            let n = entries.len();
+                            self.ua_status = match winset::save_set("last", &entries) {
+                                Ok(()) => format!("saved {n}"),
+                                Err(_) => "save failed".into(),
+                            };
+                        }
+                        if ui
+                            .button("Restore")
+                            .on_hover_text("Relaunch the saved 'last' set")
+                            .clicked()
+                        {
+                            match winset::load_set("last") {
+                                Some(set) => {
+                                    let n = set.len();
+                                    winset::relaunch(set, Duration::from_millis(1500));
+                                    self.ua_status = format!("relaunching {n}…");
+                                }
+                                None => self.ua_status = "no saved set".into(),
+                            }
+                        }
+                    });
+                    if !self.ua_status.is_empty() {
+                        ui.label(egui::RichText::new(&self.ua_status).small().weak());
+                    }
+                    if ui
+                        .button("Update Assist")
+                        .on_hover_text(
+                            "Insiders update helper: close all but one window per host×build,\n\
+                             you run the update(s), then relaunch the rest.",
+                        )
+                        .clicked()
+                    {
+                        self.ua_status.clear();
+                        self.ua_state = UaState::ConfirmClose;
+                    }
+                }
+                UaState::ConfirmClose => {
+                    ui.label(
+                        egui::RichText::new("Keep one window per host × build, close the rest?")
+                            .small()
+                            .weak(),
+                    );
+                    ui.horizontal(|ui| {
+                        if ui.button("Close Extras").clicked() {
+                            self.ua_close_extras();
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.ua_cancel();
+                        }
+                    });
+                }
+                UaState::ReadyRelaunch => {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Closed {}. Your turn — start the update(s), then click Relaunch.",
+                            self.ua_closed
+                        ))
+                        .small(),
+                    );
+                    ui.horizontal(|ui| {
+                        if ui.button("Relaunch").clicked() {
+                            self.ua_relaunch_now();
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.ua_cancel();
+                        }
+                    });
+                }
+            }
+            ui.add_space(4.0);
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
