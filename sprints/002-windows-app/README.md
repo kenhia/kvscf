@@ -74,11 +74,15 @@ a service (contrast `kpidashclient-win`).
 - [x] Settings persistence: `maximize_on_focus` + `auto_hide` → `HKCU\Software\kenhia\kvscf` (`winreg`),
       written on change.
 - [x] No console in release (`windows_subsystem` gated to release).
+- [x] **AppBar "docked" mode (WI #468)**: `dock.rs` reserves the **primary monitor left edge**
+      (`SHAppBarMessage` ABM_NEW/QUERYPOS/SETPOS/REMOVE); "Dock (primary left)" toggle flips
+      decorations + always-on-top and (de)registers the appbar; ~1s re-assert; `on_exit` removes it;
+      `docked` persisted. HWND via eframe `HasWindowHandle`. **Verified live** — maximized windows respect
+      the reserved band, undock releases it, persists across runs.
 - [ ] Minimize to tray + restore (`tray-icon`) — deferred; less critical now the window is a normal,
-      non-top window.
+      non-top window (and a docked bar likely doesn't want a tray).
 - [ ] Global restore hotkey — deferred with tray.
 - [ ] Single-instance guard; clean shutdown.
-- [ ] **AppBar "docked" mode (WI #468)** — next slice.
 
 ## Verified with Ken (2026-07-18)
 
@@ -86,6 +90,10 @@ Screenshot review + live use: rows/colors/left-align good; **bold** made scannin
 (**~0.5–1.5 s** to find a target vs **5–12 s** hunting taskbar thumbnails); truncation "perfect";
 settings persist on subsequent runs. Dropped the **Mono** option (bold alone won). The first-run
 "didn't persist" was an artifact of watching it together; later runs persist fine.
+
+**AppBar dock (#468) verified:** "everything works exactly as expected" — docks to primary left,
+maximized windows respect the reserved band, undock releases it cleanly, persists across runs. (Same
+benign first-run persistence quirk as above.)
 
 ## Notes / open questions
 
