@@ -1,0 +1,11 @@
+/target
+**/*.rs.bk
+Cargo.lock.bak
+
+# local, machine-specific config (mirrors kpidashclient-win convention)
+*-local.toml
+cleo-config.toml
+
+# editor / OS cruft
+.DS_Store
+Thumbs.db
