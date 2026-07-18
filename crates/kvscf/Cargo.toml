@@ -14,3 +14,6 @@ path = "src/main.rs"
 # Default features → `remote` on: full build with the kdeskdash channel.
 [dependencies]
 kvscf-app = { path = "../kvscf-app" }
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
