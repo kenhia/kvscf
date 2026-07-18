@@ -43,8 +43,11 @@ skeleton everything else attaches to.
       was wrong; the un-mitigated path is unusable. Recorded above.
 - [x] Confirm no phantom entries (helper/renderer/cloaked windows) leak into the list — the Rust
       `kvscf-core list` returns exactly the 17 real windows, none spurious.
-- [~] Live focus via the **Rust** `focus()` path — not yet run (PowerShell equivalent confirmed working;
-      Rust CLI `focus <hwnd>` ready to exercise on demand).
+- [x] Live focus via the **Rust** `focus()` path — confirmed by Ken (2026-07-17): focused `kdeskdash`
+      (restored from minimized) then `kagent` 3s later; both came to the foreground. **Finding:** a
+      *maximized* target (`kagent`) came forward but got **un-maximized** — `focus()` calls `SW_RESTORE`
+      unconditionally, which un-maximizes. Fix + a "maximize on focus" app option tracked in
+      **korg kvscf WI #465** (only `SW_RESTORE` when `IsIconic`).
 
 ## Out of scope (later sprints)
 
