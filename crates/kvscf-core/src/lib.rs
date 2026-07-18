@@ -16,7 +16,7 @@ mod focus;
 #[cfg(windows)]
 pub use enumerate::scan;
 #[cfg(windows)]
-pub use focus::{focus, focus_unmitigated};
+pub use focus::{focus, focus_unmitigated, focus_with};
 
 // Portable stubs so the crate (and the parse tests) build on non-Windows hosts.
 #[cfg(not(windows))]
@@ -25,6 +25,10 @@ pub fn scan() -> Vec<Instance> {
 }
 #[cfg(not(windows))]
 pub fn focus(_hwnd: i64) -> bool {
+    false
+}
+#[cfg(not(windows))]
+pub fn focus_with(_hwnd: i64, _maximize: bool) -> bool {
     false
 }
 #[cfg(not(windows))]
