@@ -12,7 +12,17 @@ Two faces of the same tool:
 
 See [PLAN.md](PLAN.md) for design and decisions, and `sprints/` for sprint-by-sprint progress.
 
-Status: **planning complete, implementation not started.**
+Status: **sprint 001 core built** — `kvscf-core` enumerates, parses, and focuses VS Code windows
+(11 tests, `windows-latest` CI). Sprints 002 (app) and 003 (remote) not started.
+
+## Build / run
+
+```sh
+cargo build
+cargo test
+cargo run -p kvscf-core --bin kvscf-core -- list        # list open VS Code windows
+cargo run -p kvscf-core --bin kvscf-core -- focus <hwnd> # foreground+focus one
+```
 
 ## Sprints
 

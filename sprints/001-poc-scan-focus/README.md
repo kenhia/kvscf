@@ -1,8 +1,9 @@
 # Sprint 001 — POC: scan & focus
 
-Status: **POC validated (PowerShell prototype) — all three mechanics proven; Rust `kvscf-core` build
-pending.** Enumeration, title parsing, and the focus recipe are all confirmed against live windows on
-Ken's box (see Findings). Remaining: port to the `kvscf-core` crate with unit tests + CI.
+Status: **core built.** All three mechanics validated (PowerShell prototype) *and* ported to the
+`kvscf-core` crate — enumerate + parse + focus, 11 passing unit tests, `windows-latest` CI, clippy-clean.
+Rust `kvscf-core list` returns 17/17 real windows on Ken's box. Only the Rust live `focus` exercise
+remains open (PowerShell equivalent already confirmed).
 
 ## Goal
 
@@ -40,7 +41,10 @@ skeleton everything else attaches to.
 - [x] **Un-mitigated characterization:** bare `SetForegroundWindow` did **nothing visible** for a
       minimized window (no raise, no taskbar flash) despite returning `True` — the fallback hypothesis
       was wrong; the un-mitigated path is unusable. Recorded above.
-- [ ] Confirm no phantom entries (helper/renderer/cloaked windows) leak into the list.
+- [x] Confirm no phantom entries (helper/renderer/cloaked windows) leak into the list — the Rust
+      `kvscf-core list` returns exactly the 17 real windows, none spurious.
+- [~] Live focus via the **Rust** `focus()` path — not yet run (PowerShell equivalent confirmed working;
+      Rust CLI `focus <hwnd>` ready to exercise on demand).
 
 ## Out of scope (later sprints)
 
@@ -50,18 +54,23 @@ skeleton everything else attaches to.
 
 ## Tasks
 
-- [ ] Workspace `Cargo.toml` + `crates/kvscf-core` scaffold, deps (`windows` crate feature set for
-      `Win32_UI_WindowsAndMessaging`, `Win32_System_Threading`, `Win32_Foundation`, ...).
-- [ ] `enumerate.rs`: `EnumWindows` collect → filter → `(hwnd, pid, title, process_name)`.
-- [ ] `parse.rs`: title → `Instance`; remote-tag extraction + `${dirty}`/`${...}` stripping; unit tests
-      over real title samples (locals, SSH, WSL, Insiders, Default profile).
-- [ ] `focus.rs`: `SW_RESTORE` + `AttachThreadInput` + `SetForegroundWindow` (+ ALT fallback); plus a
-      no-mitigation variant for the taskbar-highlight characterization.
-- [ ] `sort.rs` / format: default group-by-host, plus recency-by-`z_index`; display formatter
-      (`workspace (host)`, `*` dirty).
-- [ ] `main.rs`: `list` / `focus <hwnd>` verbs.
-- [ ] CI workflow on `windows-latest`.
-- [ ] Run the four verification checks above; record real title samples in `parse.rs` tests.
+- [x] Workspace `Cargo.toml` + `crates/kvscf-core` scaffold, deps (`windows` 0.58, features
+      `Win32_UI_WindowsAndMessaging`, `Win32_System_Threading`, `Win32_Foundation`,
+      `Win32_UI_Input_KeyboardAndMouse`).
+- [x] `enumerate.rs`: `EnumWindows` collect → filter (visible + titled + process image is a VS Code
+      build) → `Instance`. Process image via `OpenProcess` + `QueryFullProcessImageNameW`.
+- [x] `parse.rs`: pure title → `ParsedTitle`; remote-tag extraction + `${dirty}`/`${...}` stripping;
+      **11 unit tests** over real samples (locals, SSH kai/kubs0, WSL, Dev Container, Insiders, Stable,
+      colon-in-active, parens-in-active, stray-token, empty) — all green.
+- [x] `focus.rs`: `AttachThreadInput` + `SW_RESTORE` + `SetForegroundWindow` + `BringWindowToTop`; plus
+      `focus_unmitigated` for the characterization. (ALT-blip fallback held in reserve.)
+- [x] Sort + format: `cli.rs` default sort (locals first, then host, then workspace); `Instance::label`
+      renders `workspace (host)`. (Recency-by-`z_index` sort toggle deferred to the app in 002.)
+- [x] `bin/cli.rs`: `list` / `focus <hwnd>` verbs.
+- [x] CI workflow on `windows-latest` (`.github/workflows/ci.yml`): fmt + clippy `-D warnings` + build +
+      test.
+- [x] Ran verification: Rust `list` returns 17/17 real windows, correctly labeled; parse tests encode
+      the real samples. (Rust live `focus` pending — see verification list.)
 
 ## Findings (live sanity check, 2026-07-17)
 

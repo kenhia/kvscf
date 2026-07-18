@@ -1,0 +1,10 @@
+[workspace]
+resolver = "2"
+members = ["crates/kvscf-core"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Ken Hiatt <ken.hiatt@gmail.com>"]
+repository = "https://github.com/kenhia/kvscf"
