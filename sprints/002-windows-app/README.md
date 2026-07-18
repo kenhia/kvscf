@@ -1,7 +1,10 @@
 # Sprint 002 — The Windows app
 
-Status: **in progress** (depends on 001). Includes **korg kvscf WI #465** (focus un-maximize fix +
-"maximize on focus" checkbox), pulled in at kickoff.
+Status: **done.** Floating + docked (AppBar) modes, bold/colored live list, click-to-focus, settings
+persistence, single-instance guard — all verified live. Includes **WI #465** (focus un-maximize fix +
+"maximize on focus") and **WI #468** (AppBar dock), both resolved. Tray + global hotkey intentionally
+**deferred** (a docked bar likely doesn't want a tray; revisit if wanted). Next: sprint 003 (remote),
+with **WI #471** (feature-gate remote comms / `kvscf-local`) pulled in from the start.
 
 ## Goal
 
