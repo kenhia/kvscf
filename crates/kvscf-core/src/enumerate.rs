@@ -10,15 +10,17 @@ use windows::Win32::System::Threading::{
     OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible,
+    EnumWindows, GetClassNameW, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
+    IsWindowVisible,
 };
 
 use crate::parse::{parse_edge_title, parse_title};
-use crate::{App, EdgeWindow, Instance};
+use crate::{App, AppMatcher, EdgeWindow, Instance};
 
 struct Raw {
     hwnd: isize,
     pid: u32,
+    class: String,
     title: String,
 }
 
@@ -26,6 +28,7 @@ struct Raw {
 struct ImagedWin {
     hwnd: i64,
     image: String,
+    class: String,
     title: String,
 }
 
@@ -37,15 +40,35 @@ fn raw_windows() -> Vec<ImagedWin> {
         let _ = EnumWindows(Some(enum_proc), LPARAM(&mut raws as *mut _ as isize));
     }
     raws.into_iter()
-        .filter_map(|raw| {
-            let image = process_image_basename(raw.pid)?;
-            Some(ImagedWin {
-                hwnd: raw.hwnd as i64,
-                image,
-                title: raw.title,
-            })
+        .map(|raw| ImagedWin {
+            hwnd: raw.hwnd as i64,
+            image: process_image_basename(raw.pid).unwrap_or_default(),
+            class: raw.class,
+            title: raw.title,
         })
         .collect()
+}
+
+/// Find the first (topmost) window matching an [`AppMatcher`] — for the Apps tab (sprint 007).
+pub fn find_app_window(m: &AppMatcher) -> Option<i64> {
+    // At least one of process/class must be set, else nothing matches.
+    if m.process.is_none() && m.class.is_none() {
+        return None;
+    }
+    raw_windows()
+        .into_iter()
+        .find(|w| {
+            m.process
+                .as_deref()
+                .map(|p| w.image.eq_ignore_ascii_case(p))
+                .unwrap_or(true)
+                && m.class.as_deref().map(|c| w.class == c).unwrap_or(true)
+                && m.title_contains
+                    .as_deref()
+                    .map(|t| w.title.contains(t))
+                    .unwrap_or(true)
+        })
+        .map(|w| w.hwnd)
 }
 
 /// Open VS Code / Insiders windows.
@@ -137,12 +160,17 @@ unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
     }
     let title = String::from_utf16_lossy(&buf[..read as usize]);
 
+    let mut cbuf = [0u16; 256];
+    let clen = GetClassNameW(hwnd, &mut cbuf);
+    let class = String::from_utf16_lossy(&cbuf[..clen.max(0) as usize]);
+
     let mut pid = 0u32;
     GetWindowThreadProcessId(hwnd, Some(&mut pid));
 
     raws.push(Raw {
         hwnd: hwnd.0 as isize,
         pid,
+        class,
         title,
     });
     TRUE

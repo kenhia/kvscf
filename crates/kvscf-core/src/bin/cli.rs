@@ -5,13 +5,14 @@
 //!   kvscf-core edge       # print open Edge windows (named first, then unnamed)
 //!   kvscf-core focus <hwnd>
 
-use kvscf_core::{focus, scan, scan_edge};
+use kvscf_core::{find_app_window, focus, scan, scan_edge, AppMatcher};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
         None | Some("list") => cmd_list(),
         Some("edge") => cmd_edge(),
+        Some("find") => cmd_find(&args[2..]),
         Some("focus") => {
             let Some(hwnd) = args.get(2).and_then(|s| s.parse::<i64>().ok()) else {
                 eprintln!("usage: kvscf-core focus <hwnd>");
@@ -21,9 +22,29 @@ fn main() {
             println!("focus({hwnd}) -> SetForegroundWindow returned {ok}");
         }
         Some(other) => {
-            eprintln!("unknown command: {other}\nusage: kvscf-core [list | edge | focus <hwnd>]");
+            eprintln!(
+                "unknown command: {other}\n\
+                 usage: kvscf-core [list | edge | find [proc=X] [class=Y] [title=Z] | focus <hwnd>]"
+            );
             std::process::exit(2);
         }
+    }
+}
+
+fn cmd_find(args: &[String]) {
+    let mut m = AppMatcher::default();
+    for a in args {
+        if let Some(v) = a.strip_prefix("proc=") {
+            m.process = Some(v.to_string());
+        } else if let Some(v) = a.strip_prefix("class=") {
+            m.class = Some(v.to_string());
+        } else if let Some(v) = a.strip_prefix("title=") {
+            m.title_contains = Some(v.to_string());
+        }
+    }
+    match find_app_window(&m) {
+        Some(hwnd) => println!("found hwnd={hwnd}  (matcher: {m:?})"),
+        None => println!("no window matched {m:?}"),
     }
 }
 

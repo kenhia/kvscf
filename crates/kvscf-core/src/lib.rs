@@ -9,12 +9,16 @@ pub mod parse;
 pub use parse::{parse_edge_title, parse_title, EdgeTitle, ParsedTitle};
 
 #[cfg(windows)]
+mod app;
+#[cfg(windows)]
 mod enumerate;
 #[cfg(windows)]
 mod focus;
 
 #[cfg(windows)]
-pub use enumerate::{scan, scan_all, scan_edge};
+pub use app::{launch_and_focus, launch_app};
+#[cfg(windows)]
+pub use enumerate::{find_app_window, scan, scan_all, scan_edge};
 #[cfg(windows)]
 pub use focus::{close_window, focus, focus_unmitigated, focus_with};
 
@@ -31,6 +35,16 @@ pub fn scan_edge() -> Vec<EdgeWindow> {
 pub fn scan_all() -> (Vec<Instance>, Vec<EdgeWindow>) {
     (Vec::new(), Vec::new())
 }
+#[cfg(not(windows))]
+pub fn find_app_window(_m: &AppMatcher) -> Option<i64> {
+    None
+}
+#[cfg(not(windows))]
+pub fn launch_app(_s: &LaunchSpec) -> std::io::Result<()> {
+    Ok(())
+}
+#[cfg(not(windows))]
+pub fn launch_and_focus(_s: &LaunchSpec, _m: &AppMatcher) {}
 #[cfg(not(windows))]
 pub fn focus(_hwnd: i64) -> bool {
     false
@@ -140,4 +154,34 @@ pub struct EdgeWindow {
     pub named: bool,
     pub tab_count: Option<u32>,
     pub z_index: usize,
+}
+
+/// How to recognize a configured app's window (Apps tab, sprint 007). A window matches when every
+/// set field matches; at least one of `process` / `class` must be set (title alone is ambiguous).
+#[derive(Debug, Clone, Default)]
+pub struct AppMatcher {
+    /// Process image basename, case-insensitive (e.g. `"claude.exe"`). May be unavailable for
+    /// elevated processes — use `class` then.
+    pub process: Option<String>,
+    /// Exact window class (e.g. `"EVERYTHING"`) — needs no process access.
+    pub class: Option<String>,
+    /// Optional title substring to disambiguate multi-window apps (e.g. exclude "Friends").
+    pub title_contains: Option<String>,
+}
+
+/// How to launch an app that isn't running.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaunchKind {
+    /// Spawn an executable path directly (Win32 apps).
+    Exe,
+    /// `explorer.exe shell:AppsFolder\<AUMID>` (Store apps, whose install paths are versioned).
+    Aumid,
+}
+
+/// A launch target for [`launch_app`].
+#[derive(Debug, Clone)]
+pub struct LaunchSpec {
+    pub kind: LaunchKind,
+    /// Exe path (for `Exe`) or AppUserModelID (for `Aumid`).
+    pub target: String,
 }
