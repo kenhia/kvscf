@@ -1,8 +1,10 @@
 # Sprint 003 — Remote plumbing + kdeskdash handoff
 
-Status: **in progress** (depends on 001/002). Includes **WI #471** (feature-gate the remote comms;
-ship a no-comms `kvscf-local` for `kwork`) — pulled in **from the start** so the channel is written
-feature-gated from day one, not retrofitted.
+Status: **done.** Redis channel to the claude-feed instance (publish `kvscf:instances:*` + subscribe
+`kvscf:focus:*`), token auth, feature-gated so `kvscf-local` (kwork) has no comms code. Verified live
+end-to-end, including background-thread focus and full outage recovery (rpidash2 power-cycle). Reverse
+handoff + architecture docs delivered; kdeskdash `vscode` mode unblocked. Includes **WI #471**
+(feature-gate; `kvscf-local`), pulled in from the start.
 
 ## Goal
 
@@ -86,8 +88,9 @@ window on cleo (confirmed by Ken) — including the background-thread case. Wron
 - [x] kvscf publishes; the list appears in Redis and updates.
 - [x] A focus command from Redis foregrounds the correct window **from a background subscriber thread**
       (the real hard-case test — passed).
-- [ ] Reconnect across Redis restart / Windows sleep-wake — backoff loops are in place; not yet
-      exercised end-to-end.
+- [x] Reconnect across a full Redis outage — verified via a real rpidash2 power-cycle (2026-07-18):
+      both threads recovered with **no app restart** (publisher republished with a fresh ts; a focus
+      command foregrounded a window again).
 
 ## Out of scope
 
