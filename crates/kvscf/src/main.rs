@@ -1,21 +1,27 @@
 //! kvscf app — a tall/thin "nav rail" of open VS Code windows.
 //! Click a row to foreground+focus it. Optional "maximize on focus" (WI #465).
 //!
-//! This slice: a normal (non-always-on-top) resizable window that remembers its geometry,
-//! a live left-aligned list (name build-colored + real bold, host italic, name truncated but
-//! host always kept), click-to-focus, and settings ("maximize on focus", "auto-hide after
-//! focus") persisted to HKCU\Software\kenhia\kvscf.
-//! A true reserved-edge AppBar dock is WI #468.
+//! Two window modes:
+//! - **Floating** (default): a normal, non-always-on-top, resizable window that remembers its
+//!   geometry; "Auto-hide after focus" self-minimizes ~2s after a click.
+//! - **Docked** (WI #468): an AppBar reserving the **primary monitor's left edge** so maximized
+//!   windows don't cover it (borderless, always-on-top). Ken only docks on the primary monitor.
+//!
+//! Live left-aligned list (name build-colored + real bold, host italic, name truncated but host
+//! always kept), click-to-focus, and settings ("maximize on focus", "auto-hide", "docked")
+//! persisted to HKCU\Software\kenhia\kvscf.
 
 // No console window in release builds; keep it in debug for logs.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+mod dock;
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use eframe::egui;
 use egui::text::LayoutJob;
-use egui::{Color32, FontFamily, FontId, Sense, TextFormat, ViewportCommand};
+use egui::{Color32, FontFamily, FontId, Sense, TextFormat, ViewportCommand, WindowLevel};
 
 use kvscf_core::{focus_with, scan, App, Instance, Remote};
 
@@ -23,6 +29,7 @@ const RAIL_WIDTH: f32 = 280.0;
 const RAIL_HEIGHT: f32 = 1040.0;
 const SCAN_INTERVAL: Duration = Duration::from_millis(1000);
 const AUTO_HIDE_DELAY: Duration = Duration::from_secs(2);
+const DOCK_REASSERT: Duration = Duration::from_secs(1);
 const BOLD_FAMILY: &str = "kvscf-bold";
 
 fn main() -> eframe::Result<()> {
@@ -47,8 +54,13 @@ struct KvscfApp {
     last_scan: Instant,
     maximize_on_focus: bool,
     auto_hide: bool,
+    docked: bool,
     has_bold: bool,
     hide_at: Option<Instant>,
+    hwnd: Option<isize>,
+    appbar_registered: bool,
+    mode_applied: bool,
+    last_dock_assert: Instant,
 }
 
 impl KvscfApp {
@@ -60,8 +72,13 @@ impl KvscfApp {
             last_scan: Instant::now() - SCAN_INTERVAL, // force an immediate scan
             maximize_on_focus: s.maximize_on_focus,
             auto_hide: s.auto_hide,
+            docked: s.docked,
             has_bold,
             hide_at: None,
+            hwnd: None,
+            appbar_registered: false,
+            mode_applied: false,
+            last_dock_assert: Instant::now(),
         };
         app.refresh();
         app
@@ -79,7 +96,39 @@ impl KvscfApp {
         settings::save(&settings::Settings {
             maximize_on_focus: self.maximize_on_focus,
             auto_hide: self.auto_hide,
+            docked: self.docked,
         });
+    }
+
+    /// Apply the current `docked` state: register/remove the AppBar and flip
+    /// decorations + always-on-top accordingly.
+    fn apply_mode(&mut self, ctx: &egui::Context) {
+        let Some(hwnd) = self.hwnd else { return };
+        if self.docked {
+            ctx.send_viewport_cmd(ViewportCommand::Decorations(false));
+            ctx.send_viewport_cmd(ViewportCommand::WindowLevel(WindowLevel::AlwaysOnTop));
+            if !self.appbar_registered {
+                dock::register(hwnd);
+                self.appbar_registered = true;
+            }
+            self.reassert_dock(ctx);
+        } else {
+            if self.appbar_registered {
+                dock::remove(hwnd);
+                self.appbar_registered = false;
+            }
+            ctx.send_viewport_cmd(ViewportCommand::Decorations(true));
+            ctx.send_viewport_cmd(ViewportCommand::WindowLevel(WindowLevel::Normal));
+        }
+    }
+
+    /// Re-assert the reserved left band and snap our window into it (physical pixels).
+    fn reassert_dock(&mut self, ctx: &egui::Context) {
+        let Some(hwnd) = self.hwnd else { return };
+        let ppp = ctx.pixels_per_point();
+        let width_px = (ctx.screen_rect().width() * ppp).round() as i32;
+        dock::set_pos(hwnd, width_px);
+        self.last_dock_assert = Instant::now();
     }
 
     fn name_font(&self) -> FontId {
@@ -96,7 +145,21 @@ impl KvscfApp {
 }
 
 impl eframe::App for KvscfApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        // Capture our native handle once it exists, then apply the persisted mode.
+        if self.hwnd.is_none() {
+            self.hwnd = window_hwnd(frame);
+        }
+        if !self.mode_applied && self.hwnd.is_some() {
+            self.apply_mode(ctx);
+            self.mode_applied = true;
+        }
+        // While docked, keep re-asserting the reserved band (covers taskbar/res changes).
+        if self.docked && self.appbar_registered && self.last_dock_assert.elapsed() >= DOCK_REASSERT
+        {
+            self.reassert_dock(ctx);
+        }
+
         // Fire a pending self-minimize once its delay elapses.
         if let Some(when) = self.hide_at {
             if Instant::now() >= when {
@@ -115,9 +178,22 @@ impl eframe::App for KvscfApp {
             changed |= ui
                 .checkbox(&mut self.maximize_on_focus, "Maximize on focus")
                 .changed();
-            changed |= ui
-                .checkbox(&mut self.auto_hide, "Auto-hide after focus")
-                .changed();
+            ui.horizontal(|ui| {
+                let dock_resp = ui.checkbox(&mut self.docked, "Dock (primary left)");
+                if dock_resp.changed() {
+                    changed = true;
+                    self.apply_mode(ctx);
+                }
+                ui.add_enabled_ui(!self.docked, |ui| {
+                    if ui
+                        .checkbox(&mut self.auto_hide, "Auto-hide")
+                        .on_hover_text("Self-minimize ~2s after focusing (floating mode only)")
+                        .changed()
+                    {
+                        changed = true;
+                    }
+                });
+            });
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(format!("{} window(s)", self.items.len())).weak());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -152,7 +228,9 @@ impl eframe::App for KvscfApp {
                     }
                     if let Some(hwnd) = clicked {
                         focus_with(hwnd, self.maximize_on_focus);
-                        if self.auto_hide {
+                        // Auto-hide only makes sense as a floating window; a docked bar keeps
+                        // its reserved space.
+                        if self.auto_hide && !self.docked {
                             self.hide_at = Some(Instant::now() + AUTO_HIDE_DELAY);
                         }
                     }
@@ -161,6 +239,25 @@ impl eframe::App for KvscfApp {
 
         // Keep polling / countdown ticking even when idle.
         ctx.request_repaint_after(Duration::from_millis(400));
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        // Release the reserved edge so we don't leave a dead band behind.
+        if self.appbar_registered {
+            if let Some(hwnd) = self.hwnd {
+                dock::remove(hwnd);
+                self.appbar_registered = false;
+            }
+        }
+    }
+}
+
+/// Our native window handle (Win32 HWND as isize), if available.
+fn window_hwnd(frame: &eframe::Frame) -> Option<isize> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    match frame.window_handle().ok()?.as_raw() {
+        RawWindowHandle::Win32(h) => Some(h.hwnd.get()),
+        _ => None,
     }
 }
 
@@ -314,6 +411,7 @@ mod settings {
     pub struct Settings {
         pub maximize_on_focus: bool,
         pub auto_hide: bool,
+        pub docked: bool,
     }
 
     pub fn load() -> Settings {
@@ -321,6 +419,7 @@ mod settings {
         let mut s = Settings {
             maximize_on_focus: false,
             auto_hide: false,
+            docked: false,
         };
         if let Ok(key) = RegKey::predef(HKEY_CURRENT_USER).open_subkey(PATH) {
             let get = |name: &str| key.get_value::<u32, _>(name).ok().map(|v| v != 0);
@@ -330,6 +429,9 @@ mod settings {
             if let Some(v) = get("auto_hide") {
                 s.auto_hide = v;
             }
+            if let Some(v) = get("docked") {
+                s.docked = v;
+            }
         }
         s
     }
@@ -338,6 +440,7 @@ mod settings {
         if let Ok((key, _)) = RegKey::predef(HKEY_CURRENT_USER).create_subkey(PATH) {
             let _ = key.set_value("maximize_on_focus", &(s.maximize_on_focus as u32));
             let _ = key.set_value("auto_hide", &(s.auto_hide as u32));
+            let _ = key.set_value("docked", &(s.docked as u32));
         }
     }
 }
@@ -347,11 +450,13 @@ mod settings {
     pub struct Settings {
         pub maximize_on_focus: bool,
         pub auto_hide: bool,
+        pub docked: bool,
     }
     pub fn load() -> Settings {
         Settings {
             maximize_on_focus: false,
             auto_hide: false,
+            docked: false,
         }
     }
     pub fn save(_s: &Settings) {}
