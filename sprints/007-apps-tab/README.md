@@ -59,3 +59,31 @@ skill as odd apps (Battle.net, elevated apps) turn up.
 6. Remote: publish `kvscf:apps:<host>` `{key,label,running,hwnd?}`; command `{token, app:<key>}` →
    focus-if-running-else-launch (subscriber routes numeric `id`→HWND, string `app`→launch/focus).
    Handoff to kdeskdash (greys out non-running).
+
+## Verified matchers + launch (post-build, use these for the seed config / skill)
+
+All confirmed live via `kvscf-core find …`:
+
+| key | matcher | launch_kind | launch target |
+|---|---|---|---|
+| claude | `proc=claude.exe` | aumid | `Claude_pzs8sxrjxfjjc!Claude` |
+| copilot | `proc=mscopilot.exe` | aumid | `Microsoft.Copilot_8wekyb3d8bbwe!App` |
+| everything | `class=EVERYTHING` | exe | `C:\Program Files\Everything\Everything.exe` |
+| battlenet | `class=Chrome_WidgetWin_0` + `title=Battle.net` | exe | `C:\Program Files (x86)\Battle.net\Battle.net.exe` |
+| terminal | `proc=WindowsTerminal.exe` | aumid | `Microsoft.WindowsTerminalPreview_8wekyb3d8bbwe!App` |
+| kindle | `proc=Kindle.exe` | exe | `C:\Users\kenhi\AppData\Local\Amazon\Kindle\application\Kindle.exe` |
+
+Note (verified): **Battle.net can't match by process** — its `QueryFullProcessImageNameW` basename is a
+random `temp_…`; use class+title. **Everything** is tray/elevated (`MainWindowHandle`=0, image path may
+be blocked) → class. **Apps don't auto-foreground on launch** → `launch_and_focus` launches then polls
+~20s for the window and foregrounds it.
+
+## RESUME HERE (handoff)
+
+Branch `sprint/007-apps-tab`, last commit `9e99aba`. **Done:** research + feasibility + `kvscf-core`
+primitives (`AppMatcher`, `find_app_window`, `launch_app`, `launch_and_focus`; CLI `find`). **Next, in
+order:** (1) config load from `HKCU\Software\kenhia\kvscf\apps\*` → `AppEntry`; (2) Apps tab UI (running
+→ `focus_with`, not-running → `launch_and_focus`, dimmed styling) — seed `everything` + `claude` in the
+registry to prove the loop; (3) `.claude/skills/kvscf-add-app/`, then add all six; (4) remote
+`kvscf:apps:<host>` + `{app:<key>}` command + kdeskdash handoff. Design + schema above. No korg WI yet
+filed for the Apps tab — see project memory.
