@@ -12,3 +12,6 @@ cleo-config.toml
 Thumbs.db
 
 .env
+
+# start-sprint marker (local only, never commit)
+.korg-sprint-proposal
