@@ -25,6 +25,7 @@ mod userreg;
 #[cfg(feature = "remote")]
 mod remote;
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -52,6 +53,15 @@ enum UaState {
     Idle,
     ConfirmClose,
     ReadyRelaunch,
+}
+
+/// A favorites mutation captured from a Code-tab click / context menu, applied *after* the row
+/// loop so the immutable borrow of the window list is released before we mutate `favorites`
+/// (sprint 008).
+enum FavAction {
+    Add(winset::SetEntry),
+    Remove(winset::SetEntry),
+    Close(i64),
 }
 
 const RAIL_WIDTH: f32 = 280.0;
@@ -143,6 +153,11 @@ struct KvscfApp {
     items: Vec<Instance>,
     edge: Vec<EdgeWindow>,
     apps: Vec<AppEntry>,
+    /// Persisted Code favorites (sprint 008) — folders that can be relaunched when closed.
+    favorites: Vec<winset::SetEntry>,
+    /// HWND → resolved folder entry, filled incrementally so we only read VS Code's
+    /// workspaceStorage when a *new* window appears (not every 1s refresh).
+    uri_cache: HashMap<i64, winset::SetEntry>,
     tab: Tab,
     last_scan: Instant,
     maximize_on_focus: bool,
@@ -170,6 +185,8 @@ impl KvscfApp {
             items: Vec::new(),
             edge: Vec::new(),
             apps: Vec::new(),
+            favorites: winset::load_favorites(),
+            uri_cache: HashMap::new(),
             tab: Tab::Code,
             last_scan: Instant::now() - SCAN_INTERVAL, // force an immediate scan
             maximize_on_focus: s.maximize_on_focus,
@@ -206,12 +223,57 @@ impl KvscfApp {
         self.edge = edge;
         // Apps: configured in the registry, resolved to running/not each refresh.
         self.apps = apps::scan();
+        // Favorites need each open window's folder URI; keep the HWND→URI cache in step.
+        self.refresh_uri_cache();
         self.last_scan = Instant::now();
 
         // Publish the fresh lists to kdeskdash (no-op in the local build).
         #[cfg(feature = "remote")]
         if let Some(ch) = &self.channel {
             ch.publish(&self.items, &self.edge, &self.apps);
+        }
+    }
+
+    /// Keep `uri_cache` = {open HWND → its folder entry}. Prunes closed windows, and only does the
+    /// heavier workspaceStorage resolve when a window we haven't seen yet appears.
+    fn refresh_uri_cache(&mut self) {
+        let open: HashSet<i64> = self.items.iter().map(|i| i.hwnd).collect();
+        self.uri_cache.retain(|hwnd, _| open.contains(hwnd));
+        let has_new = self
+            .items
+            .iter()
+            .any(|i| !self.uri_cache.contains_key(&i.hwnd));
+        if has_new {
+            let (resolved, _unresolved) = winset::resolve_open_set();
+            for (inst, entry) in resolved {
+                self.uri_cache.insert(inst.hwnd, entry);
+            }
+        }
+    }
+
+    /// Favorites not currently open — the dimmed, relaunchable rows.
+    fn dimmed_favorites(&self) -> Vec<winset::SetEntry> {
+        self.favorites
+            .iter()
+            .filter(|f| !self.uri_cache.values().any(|e| e.same_target(f)))
+            .cloned()
+            .collect()
+    }
+
+    /// Add `entry` to favorites (if new) and persist.
+    fn add_favorite(&mut self, entry: winset::SetEntry) {
+        if !self.favorites.iter().any(|f| f.same_target(&entry)) {
+            self.favorites.push(entry);
+            let _ = winset::save_favorites(&self.favorites);
+        }
+    }
+
+    /// Remove any favorite matching `entry`'s target and persist.
+    fn remove_favorite(&mut self, entry: &winset::SetEntry) {
+        let before = self.favorites.len();
+        self.favorites.retain(|f| !f.same_target(entry));
+        if self.favorites.len() != before {
+            let _ = winset::save_favorites(&self.favorites);
         }
     }
 
@@ -507,21 +569,80 @@ impl eframe::App for KvscfApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             let mut clicked: Option<i64> = None;
             let mut launch: Option<(kvscf_core::LaunchSpec, kvscf_core::AppMatcher)> = None;
+            let mut fav_action: Option<FavAction> = None;
+            let mut fav_launch: Option<winset::SetEntry> = None;
             match self.tab {
                 Tab::Code => {
-                    if self.items.is_empty() {
+                    let dimmed = self.dimmed_favorites();
+                    if self.items.is_empty() && dimmed.is_empty() {
                         ui.add_space(12.0);
                         ui.weak("No VS Code windows open.");
                     } else {
                         let name_font = self.name_font();
                         let host_font = self.host_font();
+                        let dark = ui.visuals().dark_mode;
                         egui::ScrollArea::vertical()
                             .auto_shrink([false, false])
                             .show(ui, |ui| {
                                 ui.spacing_mut().item_spacing.y = 1.0;
+                                // Running windows — click to focus; right-click to (un)favorite.
                                 for item in &self.items {
-                                    if draw_row(ui, item, &name_font, &host_font).clicked() {
+                                    let resp = draw_row(ui, item, &name_font, &host_font);
+                                    if resp.clicked() {
                                         clicked = Some(item.hwnd);
+                                    }
+                                    let hwnd = item.hwnd;
+                                    let entry = self.uri_cache.get(&hwnd).cloned();
+                                    let favorited = entry
+                                        .as_ref()
+                                        .map(|e| self.favorites.iter().any(|f| f.same_target(e)))
+                                        .unwrap_or(false);
+                                    resp.context_menu(|ui| match entry {
+                                        None => {
+                                            ui.add_enabled(
+                                                false,
+                                                egui::Button::new("★ Mark as favorite"),
+                                            )
+                                            .on_disabled_hover_text(
+                                                "Can't resolve this window's folder",
+                                            );
+                                        }
+                                        Some(e) if favorited => {
+                                            if ui.button("☆ Unfavorite").clicked() {
+                                                fav_action = Some(FavAction::Remove(e));
+                                                ui.close_menu();
+                                            }
+                                            if ui.button("Close (keep favorite)").clicked() {
+                                                fav_action = Some(FavAction::Close(hwnd));
+                                                ui.close_menu();
+                                            }
+                                        }
+                                        Some(e) => {
+                                            if ui.button("★ Mark as favorite").clicked() {
+                                                fav_action = Some(FavAction::Add(e));
+                                                ui.close_menu();
+                                            }
+                                        }
+                                    });
+                                }
+                                // Favorites that aren't open — dimmed; click relaunches.
+                                if !dimmed.is_empty() {
+                                    if !self.items.is_empty() {
+                                        ui.add_space(4.0);
+                                        ui.separator();
+                                        ui.add_space(2.0);
+                                    }
+                                    for fav in &dimmed {
+                                        let resp = draw_fav_row(ui, fav, &name_font, dark);
+                                        if resp.clicked() {
+                                            fav_launch = Some(fav.clone());
+                                        }
+                                        resp.context_menu(|ui| {
+                                            if ui.button("☆ Unfavorite").clicked() {
+                                                fav_action = Some(FavAction::Remove(fav.clone()));
+                                                ui.close_menu();
+                                            }
+                                        });
                                     }
                                 }
                             });
@@ -608,6 +729,19 @@ impl eframe::App for KvscfApp {
                 // Launch on a background thread; it polls for the window and foregrounds it.
                 // No auto-hide — a cold-launching app can take many seconds to appear.
                 launch_and_focus(&spec, &matcher);
+            }
+            // Relaunch a clicked dimmed favorite (sprint 008).
+            if let Some(entry) = fav_launch {
+                let _ = winset::launch(&entry);
+            }
+            // Apply a favorites mutation from a right-click.
+            match fav_action {
+                Some(FavAction::Add(e)) => self.add_favorite(e),
+                Some(FavAction::Remove(e)) => self.remove_favorite(&e),
+                Some(FavAction::Close(hwnd)) => {
+                    close_window(hwnd);
+                }
+                None => {}
             }
         });
 
@@ -711,6 +845,72 @@ fn draw_row(
         }
     }
     resp.on_hover_text(hover_text(item))
+}
+
+/// Draw one dimmed "favorite not currently open" row (sprint 008): a ○ dot + the label in a muted,
+/// build-tinted color. Clicking relaunches it (`code --folder-uri`).
+fn draw_fav_row(
+    ui: &mut egui::Ui,
+    fav: &winset::SetEntry,
+    name_font: &FontId,
+    dark: bool,
+) -> egui::Response {
+    let width = ui.available_width();
+    let pad = 8.0;
+    let color = fav_dim_color(fav.app, dark);
+
+    let mut job = LayoutJob::default();
+    job.append(
+        "○ ",
+        0.0,
+        TextFormat {
+            color,
+            font_id: FontId::proportional(11.0),
+            valign: egui::Align::Center,
+            ..Default::default()
+        },
+    );
+    job.append(
+        &fav.label,
+        0.0,
+        TextFormat {
+            color,
+            font_id: name_font.clone(),
+            ..Default::default()
+        },
+    );
+    job.wrap.max_width = width - pad * 2.0;
+    job.wrap.max_rows = 1;
+    job.wrap.break_anywhere = false;
+    job.wrap.overflow_character = Some('…');
+
+    let galley = ui.fonts(|f| f.layout_job(job));
+    let row_h = (galley.size().y + 8.0).max(24.0);
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, row_h), Sense::click());
+    if ui.is_rect_visible(rect) {
+        if resp.hovered() {
+            ui.painter()
+                .rect_filled(rect, 4.0, ui.visuals().widgets.hovered.weak_bg_fill);
+        }
+        ui.painter().galley(
+            egui::pos2(rect.left() + pad, rect.center().y - galley.size().y / 2.0),
+            galley,
+            Color32::PLACEHOLDER,
+        );
+    }
+    resp.on_hover_text(format!("{}\nnot open — click to relaunch", fav.label))
+}
+
+/// A muted, build-tinted color for a not-open favorite — the build accent blended halfway to gray,
+/// so Insiders favorites still read greenish and Stable bluish while clearly dimmed.
+fn fav_dim_color(app: App, dark: bool) -> Color32 {
+    let base = app_color(app, dark);
+    let g: u16 = if dark { 90 } else { 165 };
+    Color32::from_rgb(
+        ((base.r() as u16 + g) / 2) as u8,
+        ((base.g() as u16 + g) / 2) as u8,
+        ((base.b() as u16 + g) / 2) as u8,
+    )
 }
 
 /// Accent color per VS Code build — applied to the workspace name.

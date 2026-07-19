@@ -20,6 +20,14 @@ pub struct SetEntry {
     pub label: String,
 }
 
+impl SetEntry {
+    /// Identity for favorites (sprint 008): same build + same folder, ignoring the display label.
+    /// A given folder open in Stable vs Insiders are distinct targets.
+    pub fn same_target(&self, other: &SetEntry) -> bool {
+        self.app == other.app && self.uri == other.uri
+    }
+}
+
 /// A folder URI VS Code has recorded, decoded enough to match against an open window.
 struct KnownUri {
     basename: String,
@@ -222,20 +230,22 @@ fn sets_dir() -> Option<PathBuf> {
     appdata().map(|p| p.join("kvscf").join("sets"))
 }
 
-pub fn save_set(name: &str, entries: &[SetEntry]) -> std::io::Result<()> {
-    let dir = sets_dir().ok_or_else(|| std::io::Error::other("no APPDATA"))?;
-    fs::create_dir_all(&dir)?;
+/// Write a `{ "entries": [...] }` JSON file (creating parent dirs). Shared by named sets and the
+/// favorites list.
+fn write_entries(path: PathBuf, entries: &[SetEntry]) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)?;
+    }
     let arr: Vec<serde_json::Value> = entries
         .iter()
         .map(|e| serde_json::json!({ "app": app_key(e.app), "uri": e.uri, "label": e.label }))
         .collect();
-    let json = serde_json::json!({ "entries": arr }).to_string();
-    fs::write(dir.join(format!("{name}.json")), json)
+    fs::write(path, serde_json::json!({ "entries": arr }).to_string())
 }
 
-pub fn load_set(name: &str) -> Option<Vec<SetEntry>> {
-    let dir = sets_dir()?;
-    let text = fs::read_to_string(dir.join(format!("{name}.json"))).ok()?;
+/// Read a `{ "entries": [...] }` JSON file back into set entries. `None` if it's missing/unreadable.
+fn read_entries(path: PathBuf) -> Option<Vec<SetEntry>> {
+    let text = fs::read_to_string(path).ok()?;
     let json: serde_json::Value = serde_json::from_str(&text).ok()?;
     let arr = json.get("entries")?.as_array()?;
     Some(
@@ -253,4 +263,30 @@ pub fn load_set(name: &str) -> Option<Vec<SetEntry>> {
             })
             .collect(),
     )
+}
+
+pub fn save_set(name: &str, entries: &[SetEntry]) -> std::io::Result<()> {
+    let dir = sets_dir().ok_or_else(|| std::io::Error::other("no APPDATA"))?;
+    write_entries(dir.join(format!("{name}.json")), entries)
+}
+
+pub fn load_set(name: &str) -> Option<Vec<SetEntry>> {
+    read_entries(sets_dir()?.join(format!("{name}.json")))
+}
+
+// --- favorites (sprint 008) ---
+
+fn favorites_path() -> Option<PathBuf> {
+    appdata().map(|p| p.join("kvscf").join("favorites.json"))
+}
+
+/// Load the persisted favorites (empty if none saved yet).
+pub fn load_favorites() -> Vec<SetEntry> {
+    favorites_path().and_then(read_entries).unwrap_or_default()
+}
+
+/// Persist the favorites list.
+pub fn save_favorites(entries: &[SetEntry]) -> std::io::Result<()> {
+    let path = favorites_path().ok_or_else(|| std::io::Error::other("no APPDATA"))?;
+    write_entries(path, entries)
 }
