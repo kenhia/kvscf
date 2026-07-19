@@ -19,6 +19,9 @@ mod apps;
 mod dock;
 mod winset;
 
+#[cfg(windows)]
+mod userreg;
+
 #[cfg(feature = "remote")]
 mod remote;
 
@@ -941,8 +944,7 @@ mod single_instance {
 
 #[cfg(windows)]
 mod settings {
-    use winreg::enums::HKEY_CURRENT_USER;
-    use winreg::RegKey;
+    use crate::userreg::UserRoot;
 
     const PATH: &str = r"Software\kenhia\kvscf";
 
@@ -959,7 +961,8 @@ mod settings {
             auto_hide: false,
             docked: false,
         };
-        if let Ok(key) = RegKey::predef(HKEY_CURRENT_USER).open_subkey(PATH) {
+        // Real user hive (see `userreg`) — a boot-cached HKCU would silently read the wrong hive.
+        if let Some(key) = UserRoot::open().and_then(|u| u.key().open_subkey(PATH).ok()) {
             let get = |name: &str| key.get_value::<u32, _>(name).ok().map(|v| v != 0);
             if let Some(v) = get("maximize_on_focus") {
                 s.maximize_on_focus = v;
@@ -975,7 +978,7 @@ mod settings {
     }
 
     pub fn save(s: &Settings) {
-        if let Ok((key, _)) = RegKey::predef(HKEY_CURRENT_USER).create_subkey(PATH) {
+        if let Some((key, _)) = UserRoot::open().and_then(|u| u.key().create_subkey(PATH).ok()) {
             let _ = key.set_value("maximize_on_focus", &(s.maximize_on_focus as u32));
             let _ = key.set_value("auto_hide", &(s.auto_hide as u32));
             let _ = key.set_value("docked", &(s.docked as u32));

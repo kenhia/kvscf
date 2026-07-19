@@ -81,9 +81,8 @@ pub struct AppConfig {
 #[cfg(windows)]
 mod config {
     use super::AppConfig;
+    use crate::userreg::UserRoot;
     use kvscf_core::{AppMatcher, LaunchKind, LaunchSpec};
-    use winreg::enums::HKEY_CURRENT_USER;
-    use winreg::RegKey;
 
     const PATH: &str = r"Software\kenhia\kvscf\apps";
 
@@ -99,7 +98,11 @@ mod config {
     /// Read every `…\kvscf\apps\<key>` subkey into an [`AppConfig`]. Entries missing the fields a
     /// row can't work without (no matcher, or an unusable launch spec) are skipped with a warning.
     pub fn load() -> Vec<AppConfig> {
-        let Ok(root) = RegKey::predef(HKEY_CURRENT_USER).open_subkey(PATH) else {
+        // Resolve the real user hive fresh each call — see `userreg` for the .DEFAULT-binding bug.
+        let Some(user) = UserRoot::open() else {
+            return Vec::new(); // hive not resolvable yet — retry next reload
+        };
+        let Ok(root) = user.key().open_subkey(PATH) else {
             return Vec::new(); // no apps configured yet
         };
         let mut out = Vec::new();

@@ -388,12 +388,12 @@ fn computer_name() -> String {
 }
 
 /// Preferred token source: `HKCU\Software\kenhia\kvscf` value `KVSCF_TOKEN`. Robust to launch
-/// location (unlike a cwd/exe-dir `.env`).
+/// location (unlike a cwd/exe-dir `.env`) and to the boot-time HKCU `.DEFAULT` binding (via
+/// `userreg` — otherwise an early-launched kvscf would silently run with the channel off).
 #[cfg(windows)]
 fn token_from_registry() -> Option<String> {
-    use winreg::enums::HKEY_CURRENT_USER;
-    use winreg::RegKey;
-    RegKey::predef(HKEY_CURRENT_USER)
+    crate::userreg::UserRoot::open()?
+        .key()
         .open_subkey(r"Software\kenhia\kvscf")
         .ok()?
         .get_value::<String, _>("KVSCF_TOKEN")
