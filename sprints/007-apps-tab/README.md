@@ -1,7 +1,8 @@
 # Sprint 007 — Apps tab (WI TBD)
 
-Status: **research done, feasibility proven; building.** A third tab of arbitrary apps Ken switches to
-a lot — focus if running, **launch if not** — configured via registry, populated by an agent skill.
+Status: **shipped.** A third tab of arbitrary apps Ken switches to a lot — focus if running,
+**launch if not** — configured via registry, populated by an agent skill. All six apps seeded and
+verified running.
 
 ## Twists (vs. Code/Edge tabs)
 
@@ -52,13 +53,19 @@ skill as odd apps (Battle.net, elevated apps) turn up.
 ## Plan
 
 1. ✅ Prove feasibility (Everything focus + Kindle cold launch).
-2. `kvscf-core`: `find_app_window(matcher)` + `launch_app(spec)` (exe / shell-AUMID).
-3. App config load from registry → `AppEntry { key, label, running, hwnd?, launch }`.
-4. Apps tab UI (running normal + focus; not-running dimmed + launch).
-5. The `kvscf-add-app` skill; add Claude/Copilot/Everything/Battle.net/Terminal/Kindle.
-6. Remote: publish `kvscf:apps:<host>` `{key,label,running,hwnd?}`; command `{token, app:<key>}` →
-   focus-if-running-else-launch (subscriber routes numeric `id`→HWND, string `app`→launch/focus).
-   Handoff to kdeskdash (greys out non-running).
+2. ✅ `kvscf-core`: `find_app_window(matcher)` + `launch_app(spec)` (exe / shell-AUMID), plus
+   `resolve_apps(matchers)` (batch, single enum pass) and `list_windows()` (skill discovery).
+3. ✅ App config load from registry → `AppEntry { key, label, matcher, launch, order, running, hwnd? }`
+   (`crates/kvscf-app/src/apps.rs`), reloaded each ~1s refresh so skill-added apps appear live.
+4. ✅ Apps tab UI (`Tab::Apps`): running → full-color ● + `focus_with`; not-running → dimmed ○ +
+   `launch_and_focus`. Headless probe `kvscf.exe --dump-apps`.
+5. ✅ The `kvscf-add-app` skill (`.claude/skills/kvscf-add-app/`) + CLI `kvscf-core windows [filter]`
+   discovery command; all six added (claude/everything/copilot/terminal/battlenet/kindle) and
+   verified running via `--dump-apps`.
+6. ✅ Remote: publish `kvscf:apps:<host>` `{key,label,running,id?,order}`; command `{token, app:<key>}`
+   → `apps::activate` (focus-if-running-else-launch). Subscriber routes `id`→HWND focus, `app`→app.
+   kdeskdash contract documented in [docs/kdeskdash-vscode-mode.md](../../docs/kdeskdash-vscode-mode.md)
+   §4. 3 unit tests lock the command/JSON contract.
 
 ## Verified matchers + launch (post-build, use these for the seed config / skill)
 
@@ -78,12 +85,19 @@ random `temp_…`; use class+title. **Everything** is tray/elevated (`MainWindow
 be blocked) → class. **Apps don't auto-foreground on launch** → `launch_and_focus` launches then polls
 ~20s for the window and foregrounds it.
 
-## RESUME HERE (handoff)
+## Done (sprint complete)
 
-Branch `sprint/007-apps-tab`, last commit `9e99aba`. **Done:** research + feasibility + `kvscf-core`
-primitives (`AppMatcher`, `find_app_window`, `launch_app`, `launch_and_focus`; CLI `find`). **Next, in
-order:** (1) config load from `HKCU\Software\kenhia\kvscf\apps\*` → `AppEntry`; (2) Apps tab UI (running
-→ `focus_with`, not-running → `launch_and_focus`, dimmed styling) — seed `everything` + `claude` in the
-registry to prove the loop; (3) `.claude/skills/kvscf-add-app/`, then add all six; (4) remote
-`kvscf:apps:<host>` + `{app:<key>}` command + kdeskdash handoff. Design + schema above. No korg WI yet
-filed for the Apps tab — see project memory.
+Everything above shipped. Verification:
+- `cargo test -p kvscf-core` (16) + `cargo test -p kvscf-app --features remote` (3) green; clippy clean
+  on the remote, isolated-local, and core builds.
+- `kvscf.exe --dump-apps` resolves all six configured apps to `running` with their HWNDs.
+- Matchers each verified live via `kvscf-core find …`; launch specs verified (AUMIDs from
+  `Get-StartApps`, exe paths exist).
+
+**Not done / follow-ups:**
+- No korg WI was ever filed for the Apps tab (the whole sprint ran WI-less). If we want it tracked,
+  file one retroactively.
+- kdeskdash side (rendering `kvscf:apps:*`, greying out non-running, sending `{app:<key>}`) is the
+  other half — contract is in docs §4, not yet implemented on kdeskdash.
+- Launch-spec *launch* paths weren't cold-tested this session (all six were already running); detection
+  was fully verified. Cold-launch was proven in feasibility (Kindle) and reuses `launch_and_focus`.

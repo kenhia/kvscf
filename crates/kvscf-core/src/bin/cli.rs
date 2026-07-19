@@ -3,15 +3,19 @@
 //!   kvscf-core            # same as `list`
 //!   kvscf-core list       # print the sorted VS Code instance list (with hwnds)
 //!   kvscf-core edge       # print open Edge windows (named first, then unnamed)
+//!   kvscf-core windows [filter]   # dump every visible window (hwnd/image/class/title) — the
+//!                                 # `kvscf-add-app` skill uses this to pick a matcher
+//!   kvscf-core find [proc=X] [class=Y] [title=Z]   # verify a matcher resolves to a window
 //!   kvscf-core focus <hwnd>
 
-use kvscf_core::{find_app_window, focus, scan, scan_edge, AppMatcher};
+use kvscf_core::{find_app_window, focus, list_windows, scan, scan_edge, AppMatcher};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
         None | Some("list") => cmd_list(),
         Some("edge") => cmd_edge(),
+        Some("windows") => cmd_windows(args.get(2).map(String::as_str)),
         Some("find") => cmd_find(&args[2..]),
         Some("focus") => {
             let Some(hwnd) = args.get(2).and_then(|s| s.parse::<i64>().ok()) else {
@@ -24,11 +28,33 @@ fn main() {
         Some(other) => {
             eprintln!(
                 "unknown command: {other}\n\
-                 usage: kvscf-core [list | edge | find [proc=X] [class=Y] [title=Z] | focus <hwnd>]"
+                 usage: kvscf-core [list | edge | windows [filter] | \
+                 find [proc=X] [class=Y] [title=Z] | focus <hwnd>]"
             );
             std::process::exit(2);
         }
     }
+}
+
+/// Dump every visible window: hwnd, process image, window class, title. Optional case-insensitive
+/// substring filter across image/class/title (e.g. `windows kindle`).
+fn cmd_windows(filter: Option<&str>) {
+    let f = filter.map(|s| s.to_lowercase());
+    let mut n = 0;
+    for w in list_windows() {
+        if let Some(f) = &f {
+            let hay = format!("{} {} {}", w.image, w.class, w.title).to_lowercase();
+            if !hay.contains(f) {
+                continue;
+            }
+        }
+        println!(
+            "{:>12}  {:<24}  {:<24}  {}",
+            w.hwnd, w.image, w.class, w.title
+        );
+        n += 1;
+    }
+    println!("\n{n} window(s).");
 }
 
 fn cmd_find(args: &[String]) {

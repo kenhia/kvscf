@@ -18,7 +18,7 @@ mod focus;
 #[cfg(windows)]
 pub use app::{launch_and_focus, launch_app};
 #[cfg(windows)]
-pub use enumerate::{find_app_window, scan, scan_all, scan_edge};
+pub use enumerate::{find_app_window, list_windows, resolve_apps, scan, scan_all, scan_edge, WindowInfo};
 #[cfg(windows)]
 pub use focus::{close_window, focus, focus_unmitigated, focus_with};
 
@@ -38,6 +38,21 @@ pub fn scan_all() -> (Vec<Instance>, Vec<EdgeWindow>) {
 #[cfg(not(windows))]
 pub fn find_app_window(_m: &AppMatcher) -> Option<i64> {
     None
+}
+#[cfg(not(windows))]
+pub fn resolve_apps(matchers: &[AppMatcher]) -> Vec<Option<i64>> {
+    matchers.iter().map(|_| None).collect()
+}
+#[cfg(not(windows))]
+pub struct WindowInfo {
+    pub hwnd: i64,
+    pub image: String,
+    pub class: String,
+    pub title: String,
+}
+#[cfg(not(windows))]
+pub fn list_windows() -> Vec<WindowInfo> {
+    Vec::new()
 }
 #[cfg(not(windows))]
 pub fn launch_app(_s: &LaunchSpec) -> std::io::Result<()> {
