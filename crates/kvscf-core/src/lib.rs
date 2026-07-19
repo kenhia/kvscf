@@ -18,7 +18,9 @@ mod focus;
 #[cfg(windows)]
 pub use app::{launch_and_focus, launch_app};
 #[cfg(windows)]
-pub use enumerate::{find_app_window, list_windows, resolve_apps, scan, scan_all, scan_edge, WindowInfo};
+pub use enumerate::{
+    find_app_window, list_windows, resolve_apps, scan, scan_all, scan_edge, WindowInfo,
+};
 #[cfg(windows)]
 pub use focus::{close_window, focus, focus_unmitigated, focus_with};
 

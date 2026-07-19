@@ -12,8 +12,8 @@
 //! self-heals. We open once, wrap the handle in a (winreg) [`RegKey`] so the existing get/enum/set
 //! code is unchanged, and let its `Drop` close the handle.
 
-use winreg::RegKey;
 use windows::Win32::System::Registry::{RegOpenCurrentUser, HKEY, KEY_READ, KEY_WRITE};
+use winreg::RegKey;
 
 /// A freshly-resolved handle to the current user's registry hive root (`HKU\<SID>`), opened for
 /// read+write. Use [`key`](UserRoot::key) to open subkeys under it exactly as with a winreg root.

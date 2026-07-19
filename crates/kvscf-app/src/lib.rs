@@ -396,7 +396,11 @@ impl eframe::App for KvscfApp {
                     Tab::Edge => self.edge.len(),
                     Tab::Apps => self.apps.len(),
                 };
-                let noun = if self.tab == Tab::Apps { "app" } else { "window" };
+                let noun = if self.tab == Tab::Apps {
+                    "app"
+                } else {
+                    "window"
+                };
                 ui.label(egui::RichText::new(format!("{n} {noun}(s)")).weak());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("⟳").on_hover_text("Refresh now").clicked() {
@@ -780,7 +784,12 @@ fn draw_edge_row(
 
 /// Draw one Apps row. A **running** app shows in full color with a small ● dot; a **not-running**
 /// app is dimmed with a ○ dot — a click focuses the former, launches the latter.
-fn draw_app_row(ui: &mut egui::Ui, entry: &AppEntry, name_font: &FontId, dark: bool) -> egui::Response {
+fn draw_app_row(
+    ui: &mut egui::Ui,
+    entry: &AppEntry,
+    name_font: &FontId,
+    dark: bool,
+) -> egui::Response {
     let width = ui.available_width();
     let pad = 8.0;
     let color = if entry.running {

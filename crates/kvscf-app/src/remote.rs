@@ -436,7 +436,10 @@ mod tests {
         }
         // `app` takes precedence over any `id` — an app tap is unambiguous.
         let both = format!(r#"{{"token":"{TOK}","app":"claude","id":"999"}}"#);
-        assert!(matches!(parse_command(&both, TOK), Some(Command::App { .. })));
+        assert!(matches!(
+            parse_command(&both, TOK),
+            Some(Command::App { .. })
+        ));
     }
 
     #[test]
@@ -473,8 +476,7 @@ mod tests {
                 hwnd: None,
             },
         ];
-        let v: serde_json::Value =
-            serde_json::from_str(&build_apps_json(&cfg, &apps)).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&build_apps_json(&cfg, &apps)).unwrap();
         assert_eq!(v["host"], "cleo");
         let arr = v["apps"].as_array().unwrap();
         assert_eq!(arr[0]["key"], "claude");

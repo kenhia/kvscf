@@ -110,7 +110,11 @@ mod config {
             let Ok(sub) = root.open_subkey(&key) else {
                 continue;
             };
-            let get = |name: &str| sub.get_value::<String, _>(name).ok().filter(|v| !v.is_empty());
+            let get = |name: &str| {
+                sub.get_value::<String, _>(name)
+                    .ok()
+                    .filter(|v| !v.is_empty())
+            };
 
             let label = get("label").unwrap_or_else(|| key.clone());
             let matcher = AppMatcher {
@@ -122,9 +126,10 @@ mod config {
                 eprintln!("kvscf: app '{key}' has no process/class matcher — skipping");
                 continue;
             }
-            let (Some(kind), Some(target)) =
-                (get("launch_kind").as_deref().and_then(parse_launch_kind), get("launch"))
-            else {
+            let (Some(kind), Some(target)) = (
+                get("launch_kind").as_deref().and_then(parse_launch_kind),
+                get("launch"),
+            ) else {
                 eprintln!("kvscf: app '{key}' has no valid launch_kind/launch — skipping");
                 continue;
             };
