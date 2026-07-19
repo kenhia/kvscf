@@ -108,6 +108,52 @@ Field notes:
 
 The kvscf app renders named windows in an Edge-teal accent; unnamed muted. Match if you like.
 
+## 4. Apps (sprint 007) — configured apps, focus-if-running-**else-launch**
+
+kvscf also publishes a set of **configured apps** (Ken's frequently-switched-to apps, e.g. Claude,
+Everything, Terminal, Battle.net, Kindle). Unlike Code/Edge these are *configured*, not
+auto-discovered, and each one may or may not be running. The key twist for the dashboard: a
+**non-running app has no HWND** — it's **launched**, not focused. So the command carries the app's
+**stable `key`** (not an HWND), and kvscf does *focus-if-running-else-launch* on its side.
+
+- **Key:** `kvscf:apps:<host>` (e.g. `kvscf:apps:cleo`), Redis **String** = JSON, **TTL 10s**,
+  republished ~1s. Discover via `SCAN kvscf:apps:*`.
+- **Payload:**
+
+```json
+{
+  "host": "cleo",
+  "ts": 1784416199,
+  "apps": [
+    { "key": "claude",     "label": "Claude",     "running": true,  "id": "9176544", "order": 0 },
+    { "key": "everything", "label": "Everything", "running": true,  "id": "182783712", "order": 1 },
+    { "key": "kindle",     "label": "Kindle",     "running": false, "id": null, "order": 5 }
+  ]
+}
+```
+
+Field notes:
+- `key` — the **stable app id** (its registry subkey). **This is what the command echoes back**, not
+  an HWND — because a non-running app has no HWND.
+- `label` — ready-to-render display name.
+- `running` — `true` = a matching window is open. **Suggested UI: render non-running apps greyed
+  out**; a tap on either state sends the same command.
+- `id` — the HWND string **when running**, else `null`. Informational (kvscf resolves the target
+  itself from `key`); you don't need it for the command.
+- `order` — configured sort index (kvscf sorts by it, then label). Optional.
+
+**Command (kdeskdash publishes → kvscf consumes):** same channel `kvscf:focus:<host>`, but keyed by
+`app` instead of `id`:
+
+```json
+{ "token": "kvscf-<64 hex>", "app": "kindle" }
+```
+
+kvscf validates the token, then **focuses the app if a matching window is open, else launches it**
+(exe or Store AUMID) and foregrounds it once its window appears (cold launch can take several
+seconds). `app` takes precedence over `id` if both are present. The HWND-based
+`{ "id": … }` command (sections 2–3) is unchanged and still used for Code/Edge rows.
+
 ## Reference
 
 - kvscf publisher/subscriber: `crates/kvscf-app/src/remote.rs` in this repo.

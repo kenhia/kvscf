@@ -10,15 +10,17 @@ use windows::Win32::System::Threading::{
     OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible,
+    EnumWindows, GetClassNameW, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
+    IsWindowVisible,
 };
 
 use crate::parse::{parse_edge_title, parse_title};
-use crate::{App, EdgeWindow, Instance};
+use crate::{App, AppMatcher, EdgeWindow, Instance};
 
 struct Raw {
     hwnd: isize,
     pid: u32,
+    class: String,
     title: String,
 }
 
@@ -26,6 +28,7 @@ struct Raw {
 struct ImagedWin {
     hwnd: i64,
     image: String,
+    class: String,
     title: String,
 }
 
@@ -37,14 +40,70 @@ fn raw_windows() -> Vec<ImagedWin> {
         let _ = EnumWindows(Some(enum_proc), LPARAM(&mut raws as *mut _ as isize));
     }
     raws.into_iter()
-        .filter_map(|raw| {
-            let image = process_image_basename(raw.pid)?;
-            Some(ImagedWin {
-                hwnd: raw.hwnd as i64,
-                image,
-                title: raw.title,
-            })
+        .map(|raw| ImagedWin {
+            hwnd: raw.hwnd as i64,
+            image: process_image_basename(raw.pid).unwrap_or_default(),
+            class: raw.class,
+            title: raw.title,
         })
+        .collect()
+}
+
+/// Whether a window satisfies a matcher. A matcher with neither process nor class set matches
+/// nothing (title alone is too ambiguous — an Edge window can be titled "Claude").
+fn app_matches(m: &AppMatcher, w: &ImagedWin) -> bool {
+    if m.process.is_none() && m.class.is_none() {
+        return false;
+    }
+    m.process
+        .as_deref()
+        .map(|p| w.image.eq_ignore_ascii_case(p))
+        .unwrap_or(true)
+        && m.class.as_deref().map(|c| w.class == c).unwrap_or(true)
+        && m.title_contains
+            .as_deref()
+            .map(|t| w.title.contains(t))
+            .unwrap_or(true)
+}
+
+/// A visible top-level window's identity — what the `kvscf-add-app` skill reads to pick a matcher.
+pub struct WindowInfo {
+    pub hwnd: i64,
+    pub image: String,
+    pub class: String,
+    pub title: String,
+}
+
+/// Every visible, titled top-level window (Z-order), with process image + class + title. The
+/// discovery half of the Apps flow: dump this, find the app, read off a `process`/`class`/`title`.
+pub fn list_windows() -> Vec<WindowInfo> {
+    raw_windows()
+        .into_iter()
+        .map(|w| WindowInfo {
+            hwnd: w.hwnd,
+            image: w.image,
+            class: w.class,
+            title: w.title,
+        })
+        .collect()
+}
+
+/// Find the first (topmost) window matching an [`AppMatcher`] — for the Apps tab (sprint 007).
+pub fn find_app_window(m: &AppMatcher) -> Option<i64> {
+    raw_windows()
+        .into_iter()
+        .find(|w| app_matches(m, w))
+        .map(|w| w.hwnd)
+}
+
+/// Resolve a batch of app matchers in a single enumeration pass — for each matcher (by index),
+/// the topmost matching window's hwnd, or `None` if it isn't running. Cheaper than one
+/// [`find_app_window`] call per app (each of which would walk every window afresh).
+pub fn resolve_apps(matchers: &[AppMatcher]) -> Vec<Option<i64>> {
+    let wins = raw_windows();
+    matchers
+        .iter()
+        .map(|m| wins.iter().find(|w| app_matches(m, w)).map(|w| w.hwnd))
         .collect()
 }
 
@@ -137,12 +196,17 @@ unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
     }
     let title = String::from_utf16_lossy(&buf[..read as usize]);
 
+    let mut cbuf = [0u16; 256];
+    let clen = GetClassNameW(hwnd, &mut cbuf);
+    let class = String::from_utf16_lossy(&cbuf[..clen.max(0) as usize]);
+
     let mut pid = 0u32;
     GetWindowThreadProcessId(hwnd, Some(&mut pid));
 
     raws.push(Raw {
         hwnd: hwnd.0 as isize,
         pid,
+        class,
         title,
     });
     TRUE

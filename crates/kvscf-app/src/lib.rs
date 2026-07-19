@@ -15,8 +15,12 @@
 //! (default, `remote` on → kdeskdash channel) and `kvscf-local` (`remote` off → no comms
 //! code at all, for `kwork`). See WI #471.
 
+mod apps;
 mod dock;
 mod winset;
+
+#[cfg(windows)]
+mod userreg;
 
 #[cfg(feature = "remote")]
 mod remote;
@@ -28,13 +32,18 @@ use eframe::egui;
 use egui::text::LayoutJob;
 use egui::{Color32, FontFamily, FontId, Sense, TextFormat, ViewportCommand, WindowLevel};
 
-use kvscf_core::{close_window, focus_with, scan_all, App, EdgeWindow, Instance, Remote};
+use kvscf_core::{
+    close_window, focus_with, launch_and_focus, scan_all, App, EdgeWindow, Instance, Remote,
+};
 
-/// Which source the app is showing (WI #474).
+use apps::AppEntry;
+
+/// Which source the app is showing (WI #474; Apps added sprint 007).
 #[derive(PartialEq, Clone, Copy)]
 enum Tab {
     Code,
     Edge,
+    Apps,
 }
 
 /// Update Assist flow state (WI #470).
@@ -66,6 +75,25 @@ pub fn run() -> eframe::Result<()> {
     // Headless probe to confirm which build this is (guards the feature-unification trap).
     if std::env::args().any(|a| a == "--build-info") {
         println!("{APP_TITLE} (remote={REMOTE_BUILD})");
+        return Ok(());
+    }
+
+    // Headless probe: load the Apps config and resolve running state (sprint 007 verification).
+    if std::env::args().any(|a| a == "--dump-apps") {
+        let entries = apps::scan();
+        if entries.is_empty() {
+            println!("(no apps configured under HKCU\\Software\\kenhia\\kvscf\\apps)");
+        }
+        for e in &entries {
+            let state = match e.hwnd {
+                Some(h) => format!("running  hwnd={h}"),
+                None => "not running".to_string(),
+            };
+            println!(
+                "{:<16} {:<12} launch={:?}:{}",
+                e.label, state, e.launch.kind, e.launch.target
+            );
+        }
         return Ok(());
     }
 
@@ -114,6 +142,7 @@ pub fn run() -> eframe::Result<()> {
 struct KvscfApp {
     items: Vec<Instance>,
     edge: Vec<EdgeWindow>,
+    apps: Vec<AppEntry>,
     tab: Tab,
     last_scan: Instant,
     maximize_on_focus: bool,
@@ -140,6 +169,7 @@ impl KvscfApp {
         let mut app = KvscfApp {
             items: Vec::new(),
             edge: Vec::new(),
+            apps: Vec::new(),
             tab: Tab::Code,
             last_scan: Instant::now() - SCAN_INTERVAL, // force an immediate scan
             maximize_on_focus: s.maximize_on_focus,
@@ -174,12 +204,14 @@ impl KvscfApp {
         });
         self.items = items;
         self.edge = edge;
+        // Apps: configured in the registry, resolved to running/not each refresh.
+        self.apps = apps::scan();
         self.last_scan = Instant::now();
 
         // Publish the fresh lists to kdeskdash (no-op in the local build).
         #[cfg(feature = "remote")]
         if let Some(ch) = &self.channel {
-            ch.publish(&self.items, &self.edge);
+            ch.publish(&self.items, &self.edge, &self.apps);
         }
     }
 
@@ -327,6 +359,11 @@ impl eframe::App for KvscfApp {
                     Tab::Edge,
                     format!("Edge ({})", self.edge.len()),
                 );
+                ui.selectable_value(
+                    &mut self.tab,
+                    Tab::Apps,
+                    format!("Apps ({})", self.apps.len()),
+                );
             });
             ui.add_space(2.0);
         });
@@ -357,8 +394,14 @@ impl eframe::App for KvscfApp {
                 let n = match self.tab {
                     Tab::Code => self.items.len(),
                     Tab::Edge => self.edge.len(),
+                    Tab::Apps => self.apps.len(),
                 };
-                ui.label(egui::RichText::new(format!("{n} window(s)")).weak());
+                let noun = if self.tab == Tab::Apps {
+                    "app"
+                } else {
+                    "window"
+                };
+                ui.label(egui::RichText::new(format!("{n} {noun}(s)")).weak());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("⟳").on_hover_text("Refresh now").clicked() {
                         self.refresh();
@@ -463,6 +506,7 @@ impl eframe::App for KvscfApp {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             let mut clicked: Option<i64> = None;
+            let mut launch: Option<(kvscf_core::LaunchSpec, kvscf_core::AppMatcher)> = None;
             match self.tab {
                 Tab::Code => {
                     if self.items.is_empty() {
@@ -514,6 +558,44 @@ impl eframe::App for KvscfApp {
                             });
                     }
                 }
+                Tab::Apps => {
+                    if self.apps.is_empty() {
+                        ui.add_space(12.0);
+                        ui.weak("No apps configured.");
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new(
+                                "Add one with the kvscf-add-app skill (writes\n\
+                                 HKCU\\Software\\kenhia\\kvscf\\apps).",
+                            )
+                            .small()
+                            .weak(),
+                        );
+                    } else {
+                        let name_font = self.name_font();
+                        let dark = ui.visuals().dark_mode;
+                        egui::ScrollArea::vertical()
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                ui.spacing_mut().item_spacing.y = 1.0;
+                                for entry in &self.apps {
+                                    if draw_app_row(ui, entry, &name_font, dark).clicked() {
+                                        match entry.hwnd {
+                                            // Running → focus it (like Code/Edge).
+                                            Some(hwnd) => clicked = Some(hwnd),
+                                            // Not running → launch, then foreground on appearance.
+                                            None => {
+                                                launch = Some((
+                                                    entry.launch.clone(),
+                                                    entry.matcher.clone(),
+                                                ))
+                                            }
+                                        }
+                                    }
+                                }
+                            });
+                    }
+                }
             }
             if let Some(hwnd) = clicked {
                 focus_with(hwnd, self.maximize_on_focus);
@@ -521,6 +603,11 @@ impl eframe::App for KvscfApp {
                 if self.auto_hide && !self.docked {
                     self.hide_at = Some(Instant::now() + AUTO_HIDE_DELAY);
                 }
+            }
+            if let Some((spec, matcher)) = launch {
+                // Launch on a background thread; it polls for the window and foregrounds it.
+                // No auto-hide — a cold-launching app can take many seconds to appear.
+                launch_and_focus(&spec, &matcher);
             }
         });
 
@@ -695,6 +782,88 @@ fn draw_edge_row(
     }
 }
 
+/// Draw one Apps row. A **running** app shows in full color with a small ● dot; a **not-running**
+/// app is dimmed with a ○ dot — a click focuses the former, launches the latter.
+fn draw_app_row(
+    ui: &mut egui::Ui,
+    entry: &AppEntry,
+    name_font: &FontId,
+    dark: bool,
+) -> egui::Response {
+    let width = ui.available_width();
+    let pad = 8.0;
+    let color = if entry.running {
+        app_running_color(dark)
+    } else {
+        app_dim_color(dark)
+    };
+    let dot = if entry.running { "● " } else { "○ " };
+
+    let mut job = LayoutJob::default();
+    job.append(
+        dot,
+        0.0,
+        TextFormat {
+            color,
+            font_id: FontId::proportional(11.0),
+            valign: egui::Align::Center,
+            ..Default::default()
+        },
+    );
+    job.append(
+        &entry.label,
+        0.0,
+        TextFormat {
+            color,
+            font_id: name_font.clone(),
+            ..Default::default()
+        },
+    );
+    job.wrap.max_width = width - pad * 2.0;
+    job.wrap.max_rows = 1;
+    job.wrap.break_anywhere = false;
+    job.wrap.overflow_character = Some('…');
+
+    let galley = ui.fonts(|f| f.layout_job(job));
+    let row_h = (galley.size().y + 8.0).max(24.0);
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, row_h), Sense::click());
+    if ui.is_rect_visible(rect) {
+        if resp.hovered() {
+            ui.painter()
+                .rect_filled(rect, 4.0, ui.visuals().widgets.hovered.weak_bg_fill);
+        }
+        ui.painter().galley(
+            egui::pos2(rect.left() + pad, rect.center().y - galley.size().y / 2.0),
+            galley,
+            Color32::PLACEHOLDER,
+        );
+    }
+    let hint = if entry.running {
+        "running — click to focus"
+    } else {
+        "not running — click to launch"
+    };
+    resp.on_hover_text(format!("{} ({})\n{hint}", entry.label, entry.key))
+}
+
+/// Full-strength color for a running app (blue, matching Code's stable accent).
+fn app_running_color(dark: bool) -> Color32 {
+    if dark {
+        Color32::from_rgb(96, 165, 235)
+    } else {
+        Color32::from_rgb(24, 108, 198)
+    }
+}
+
+/// Muted color for a not-running (launchable) app — greyed out, per the dashboard convention.
+fn app_dim_color(dark: bool) -> Color32 {
+    if dark {
+        Color32::from_gray(120)
+    } else {
+        Color32::from_gray(150)
+    }
+}
+
 fn edge_named_color(dark: bool) -> Color32 {
     if dark {
         Color32::from_rgb(72, 194, 205) // Edge teal
@@ -784,8 +953,7 @@ mod single_instance {
 
 #[cfg(windows)]
 mod settings {
-    use winreg::enums::HKEY_CURRENT_USER;
-    use winreg::RegKey;
+    use crate::userreg::UserRoot;
 
     const PATH: &str = r"Software\kenhia\kvscf";
 
@@ -802,7 +970,8 @@ mod settings {
             auto_hide: false,
             docked: false,
         };
-        if let Ok(key) = RegKey::predef(HKEY_CURRENT_USER).open_subkey(PATH) {
+        // Real user hive (see `userreg`) — a boot-cached HKCU would silently read the wrong hive.
+        if let Some(key) = UserRoot::open().and_then(|u| u.key().open_subkey(PATH).ok()) {
             let get = |name: &str| key.get_value::<u32, _>(name).ok().map(|v| v != 0);
             if let Some(v) = get("maximize_on_focus") {
                 s.maximize_on_focus = v;
@@ -818,7 +987,7 @@ mod settings {
     }
 
     pub fn save(s: &Settings) {
-        if let Ok((key, _)) = RegKey::predef(HKEY_CURRENT_USER).create_subkey(PATH) {
+        if let Some((key, _)) = UserRoot::open().and_then(|u| u.key().create_subkey(PATH).ok()) {
             let _ = key.set_value("maximize_on_focus", &(s.maximize_on_focus as u32));
             let _ = key.set_value("auto_hide", &(s.auto_hide as u32));
             let _ = key.set_value("docked", &(s.docked as u32));

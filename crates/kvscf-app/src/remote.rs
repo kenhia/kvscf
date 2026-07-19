@@ -3,8 +3,11 @@
 //! Contract (see `docs/kdeskdash-vscode-mode.md`):
 //! - **Publish** the instance list to `kvscf:instances:<host>` (JSON String, TTL 10s,
 //!   republished ~every app refresh). kdeskdash SCANs `kvscf:instances:*` and renders rows.
-//! - **Subscribe** to `kvscf:focus:<host>` (pub/sub); on `{token,id,maximize}` with a valid
-//!   token, foreground that HWND (`kvscf_core::focus_with`).
+//! - **Publish** the configured apps to `kvscf:apps:<host>` (JSON, same TTL); each is
+//!   `{key,label,running,id?}` — `id` is the HWND when running (sprint 007 Apps tab).
+//! - **Subscribe** to `kvscf:focus:<host>` (pub/sub); on `{token,id,maximize}` foreground that
+//!   HWND, or on `{token,app:<key>}` **focus-if-running-else-launch** that app
+//!   (`crate::apps::activate`). Token gates both.
 //!
 //! Redis itself is unauthenticated (trusted LAN), so `KVSCF_TOKEN` is the app-level gate on the
 //! focus command (the only action). Endpoint + token come from env / a `.env` file.
@@ -18,6 +21,8 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use kvscf_core::{focus_with, App, EdgeWindow, Instance, Remote};
+
+use crate::apps::{self, AppEntry};
 
 const DEFAULT_HOST: &str = "192.168.1.144"; // rpidash2 LAN IP (pinned, per handoff)
 const DEFAULT_PORT: u16 = 6380;
@@ -75,15 +80,20 @@ impl Config {
         format!("kvscf:edge:{}", self.this_host)
     }
 
+    fn apps_key(&self) -> String {
+        format!("kvscf:apps:{}", self.this_host)
+    }
+
     fn focus_channel(&self) -> String {
         format!("kvscf:focus:{}", self.this_host)
     }
 }
 
-/// One published snapshot: the VS Code instances and the Edge windows.
+/// One published snapshot: the VS Code instances, the Edge windows, and the configured apps.
 struct Snapshot {
     instances: Vec<Instance>,
     edge: Vec<EdgeWindow>,
+    apps: Vec<AppEntry>,
 }
 
 /// The app-facing handle. Owns the sender that feeds the publisher thread.
@@ -123,11 +133,12 @@ impl Channel {
         Some(Channel { tx, host })
     }
 
-    /// Hand the latest window lists to the publisher thread (non-blocking).
-    pub fn publish(&self, items: &[Instance], edge: &[EdgeWindow]) {
+    /// Hand the latest window/app lists to the publisher thread (non-blocking).
+    pub fn publish(&self, items: &[Instance], edge: &[EdgeWindow], apps: &[AppEntry]) {
         let _ = self.tx.send(Snapshot {
             instances: items.to_vec(),
             edge: edge.to_vec(),
+            apps: apps.to_vec(),
         });
     }
 
@@ -140,6 +151,7 @@ impl Channel {
 fn publisher_loop(cfg: Config, rx: Receiver<Snapshot>) {
     let inst_key = cfg.instances_key();
     let edge_key = cfg.edge_key();
+    let apps_key = cfg.apps_key();
     loop {
         let client = match redis::Client::open(cfg.url()) {
             Ok(c) => c,
@@ -180,7 +192,8 @@ fn publisher_loop(cfg: Config, rx: Receiver<Snapshot>) {
                 &inst_key,
                 build_instances_json(&cfg, &latest.instances),
                 &mut con,
-            ) && set(&edge_key, build_edge_json(&cfg, &latest.edge), &mut con);
+            ) && set(&edge_key, build_edge_json(&cfg, &latest.edge), &mut con)
+                && set(&apps_key, build_apps_json(&cfg, &latest.apps), &mut con);
             if !ok {
                 break; // drop out to reconnect
             }
@@ -219,9 +232,16 @@ fn subscriber_loop(cfg: Config) {
                 Ok(p) => p,
                 Err(_) => continue,
             };
-            if let Some((hwnd, maximize)) = parse_focus(&payload, &cfg.token) {
+            match parse_command(&payload, &cfg.token) {
                 // Background-thread foreground — the hostile case the 001 recipe was built for.
-                focus_with(hwnd, maximize);
+                Some(Command::Focus { hwnd, maximize }) => {
+                    focus_with(hwnd, maximize);
+                }
+                // Focus-if-running-else-launch the configured app (may spawn + poll).
+                Some(Command::App { key }) => {
+                    apps::activate(&key);
+                }
+                None => {}
             }
         }
         thread::sleep(RECONNECT_BACKOFF);
@@ -277,16 +297,53 @@ fn build_edge_json(cfg: &Config, windows: &[EdgeWindow]) -> String {
     .to_string()
 }
 
-/// Parse + authenticate a focus command. Returns `(hwnd, maximize)` only if the token matches.
-fn parse_focus(payload: &str, expected_token: &str) -> Option<(i64, bool)> {
+/// Build the configured-apps JSON payload (sprint 007). `id` (the HWND) is present only when the
+/// app is running; the dashboard greys out non-running apps and sends `{app:<key>}` to launch them.
+fn build_apps_json(cfg: &Config, apps: &[AppEntry]) -> String {
+    let items: Vec<serde_json::Value> = apps
+        .iter()
+        .map(|a| {
+            serde_json::json!({
+                "key": a.key,
+                "label": a.label,
+                "running": a.running,
+                "id": a.hwnd.map(|h| h.to_string()),
+                "order": a.order,
+            })
+        })
+        .collect();
+
+    serde_json::json!({
+        "host": cfg.this_host,
+        "ts": now_secs(),
+        "apps": items,
+    })
+    .to_string()
+}
+
+/// A parsed, authenticated command off the focus channel.
+enum Command {
+    /// Foreground an explicit HWND (VS Code / Edge rows).
+    Focus { hwnd: i64, maximize: bool },
+    /// Focus-if-running-else-launch a configured app by key (Apps tab).
+    App { key: String },
+}
+
+/// Parse + authenticate a command. Returns `None` unless the token matches. A payload with `id`
+/// is a [`Command::Focus`]; one with `app` is a [`Command::App`].
+fn parse_command(payload: &str, expected_token: &str) -> Option<Command> {
     let v: serde_json::Value = serde_json::from_str(payload).ok()?;
-    let token = v.get("token")?.as_str()?;
-    if token != expected_token {
+    if v.get("token")?.as_str()? != expected_token {
         return None;
+    }
+    if let Some(app) = v.get("app").and_then(|a| a.as_str()) {
+        return Some(Command::App {
+            key: app.to_string(),
+        });
     }
     let hwnd = v.get("id")?.as_str()?.parse::<i64>().ok()?;
     let maximize = v.get("maximize").and_then(|m| m.as_bool()).unwrap_or(false);
-    Some((hwnd, maximize))
+    Some(Command::Focus { hwnd, maximize })
 }
 
 fn remote_kind(remote: &Remote) -> &'static str {
@@ -331,12 +388,12 @@ fn computer_name() -> String {
 }
 
 /// Preferred token source: `HKCU\Software\kenhia\kvscf` value `KVSCF_TOKEN`. Robust to launch
-/// location (unlike a cwd/exe-dir `.env`).
+/// location (unlike a cwd/exe-dir `.env`) and to the boot-time HKCU `.DEFAULT` binding (via
+/// `userreg` — otherwise an early-launched kvscf would silently run with the channel off).
 #[cfg(windows)]
 fn token_from_registry() -> Option<String> {
-    use winreg::enums::HKEY_CURRENT_USER;
-    use winreg::RegKey;
-    RegKey::predef(HKEY_CURRENT_USER)
+    crate::userreg::UserRoot::open()?
+        .key()
         .open_subkey(r"Software\kenhia\kvscf")
         .ok()?
         .get_value::<String, _>("KVSCF_TOKEN")
@@ -347,4 +404,85 @@ fn token_from_registry() -> Option<String> {
 #[cfg(not(windows))]
 fn token_from_registry() -> Option<String> {
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TOK: &str = "s3cret";
+
+    #[test]
+    fn focus_command_requires_matching_token() {
+        let ok = format!(r#"{{"token":"{TOK}","id":"12345","maximize":true}}"#);
+        match parse_command(&ok, TOK) {
+            Some(Command::Focus { hwnd, maximize }) => {
+                assert_eq!(hwnd, 12345);
+                assert!(maximize);
+            }
+            other => panic!("expected Focus, got {:?}", other.is_none()),
+        }
+        // Wrong token → rejected.
+        let bad = format!(r#"{{"token":"nope","id":"12345"}}"#);
+        assert!(parse_command(&bad, TOK).is_none());
+    }
+
+    #[test]
+    fn app_command_parses_key() {
+        let msg = format!(r#"{{"token":"{TOK}","app":"everything"}}"#);
+        match parse_command(&msg, TOK) {
+            Some(Command::App { key }) => assert_eq!(key, "everything"),
+            _ => panic!("expected App command"),
+        }
+        // `app` takes precedence over any `id` — an app tap is unambiguous.
+        let both = format!(r#"{{"token":"{TOK}","app":"claude","id":"999"}}"#);
+        assert!(matches!(
+            parse_command(&both, TOK),
+            Some(Command::App { .. })
+        ));
+    }
+
+    #[test]
+    fn apps_json_carries_running_state_and_id() {
+        let cfg = Config {
+            redis_host: "h".into(),
+            redis_port: 1,
+            token: TOK.into(),
+            this_host: "cleo".into(),
+        };
+        let apps = vec![
+            AppEntry {
+                key: "claude".into(),
+                label: "Claude".into(),
+                matcher: Default::default(),
+                launch: kvscf_core::LaunchSpec {
+                    kind: kvscf_core::LaunchKind::Aumid,
+                    target: "X!App".into(),
+                },
+                order: 0,
+                running: true,
+                hwnd: Some(42),
+            },
+            AppEntry {
+                key: "kindle".into(),
+                label: "Kindle".into(),
+                matcher: Default::default(),
+                launch: kvscf_core::LaunchSpec {
+                    kind: kvscf_core::LaunchKind::Exe,
+                    target: "k.exe".into(),
+                },
+                order: 1,
+                running: false,
+                hwnd: None,
+            },
+        ];
+        let v: serde_json::Value = serde_json::from_str(&build_apps_json(&cfg, &apps)).unwrap();
+        assert_eq!(v["host"], "cleo");
+        let arr = v["apps"].as_array().unwrap();
+        assert_eq!(arr[0]["key"], "claude");
+        assert_eq!(arr[0]["running"], true);
+        assert_eq!(arr[0]["id"], "42"); // running → HWND as string
+        assert_eq!(arr[1]["running"], false);
+        assert!(arr[1]["id"].is_null()); // not running → no id
+    }
 }

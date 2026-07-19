@@ -53,10 +53,10 @@ mutex enforces a single instance.
 The channel talks to the kdeskdash desk dashboard over the shared **"claude-feed" Redis** at
 `192.168.1.144:6380` (rpidash2; LAN, no Redis auth, ephemeral: 32mb / allkeys-lru / no persistence).
 Redis being open, the app-level **`KVSCF_TOKEN`** gates the only action — the focus command. The token
-is read from **`HKCU\Software\kenhia\kvscf` (preferred)**, falling back to env / a `.env` file (cwd or
-next to the exe) — the registry path is robust to where the exe is launched from (a pinned launch from
-`C:\tools\bin` has no cwd/exe-dir `.env`). Endpoint host/port take env overrides, else the pinned
-rpidash2 defaults.
+is read from **`HKCU\Software\kenhia\kvscf` (preferred)** (via `userreg`, see below), falling back to
+env / a `.env` file (cwd or next to the exe) — the registry path is robust to where the exe is launched
+from (a pinned launch from `C:\tools\bin` has no cwd/exe-dir `.env`). Endpoint host/port take env
+overrides, else the pinned rpidash2 defaults.
 
 ```mermaid
 flowchart LR
@@ -102,6 +102,33 @@ Both live in the app library, so they work in `kvscf` and `kvscf-local` alike.
 separator → unnamed** (the user's "Name window…" name is the window title; unnamed = active tab title —
 see `sprints/005-edge-research`). Focus/close reuse the same primitives. The remote channel also
 publishes Edge windows to `kvscf:edge:<host>` (the focus channel is HWND-generic, so it's unchanged).
+
+## Apps tab (`apps`, WI #475)
+
+A third `[ Code | Edge | Apps ]` tab of **configured** apps Ken switches to a lot — **focus if running,
+launch if not**. Unlike Code/Edge (auto-discovered), apps are configured in the registry under
+`HKCU\Software\kenhia\kvscf\apps\<key>` (one subkey per app), populated by the `kvscf-add-app` agent
+skill. Each entry carries a **matcher** (process image and/or window class — never title alone; an Edge
+window can be titled "Claude") and a **launch spec** (`exe` path, or a Store `aumid` launched via
+`explorer shell:AppsFolder\<AUMID>`). Each refresh, `kvscf-core::resolve_apps` matches all configured
+apps in one enumeration pass → running rows (● full color, click to focus) and not-running rows (○
+dimmed, click to `launch_and_focus`, which launches then polls ~20s and foregrounds the window, since
+apps don't auto-front).
+
+Remote: published to `kvscf:apps:<host>` as `{key,label,running,id?,order}` (`id` = HWND only when
+running). Because a not-running app has no HWND, the command is keyed by `{token, app:<key>}` (not an
+HWND) → `apps::activate` does focus-if-running-else-launch. The subscriber routes an `id` payload to
+HWND focus and an `app` payload to app activation. See [kdeskdash-vscode-mode.md](kdeskdash-vscode-mode.md) §4.
+
+## Current-user registry (`userreg`)
+
+All `HKCU\Software\kenhia\kvscf` reads/writes (apps config, settings, `KVSCF_TOKEN`) go through
+`userreg::UserRoot`, which resolves the hive via **`RegOpenCurrentUser`** rather than the
+`HKEY_CURRENT_USER` pseudo-handle. A process launched before its user profile hive is mounted (e.g.
+auto-restored early in a slow-Windows-Update boot) otherwise gets `HKEY_CURRENT_USER` **cached to the
+empty `HKU\.DEFAULT` hive for its whole lifetime** — so the Apps tab showed "No apps configured" after
+a reboot even though the registry was intact, and the 1s reload never recovered. `RegOpenCurrentUser`
+re-resolves the real hive each call, so once the profile mounts the reload self-heals.
 
 ## kwork build
 
