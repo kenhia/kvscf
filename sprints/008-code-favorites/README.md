@@ -1,8 +1,8 @@
-# Sprint 008 — Code favorites (WI TBD)
+# Sprint 008 — Code favorites (WI #478)
 
-Status: **proposed / design.** Mark VS Code sessions as **favorites**; a favorite that isn't
-currently open shows **dimmed** and **relaunches on click** — the Apps-tab pattern
-(focus-if-running-else-launch) applied to VS Code, with the "launch" being the Update-Assist relaunch.
+Status: **built.** Mark VS Code sessions as **favorites**; a favorite that isn't currently open shows
+**dimmed** and **relaunches on click** — the Apps-tab pattern (focus-if-running-else-launch) applied
+to VS Code, with the "launch" being the Update-Assist relaunch.
 
 ## Motivation
 
@@ -74,21 +74,39 @@ This mirrors the Apps `{app:<key>}` split, just carried in the shared `id` field
 
 ## Plan
 
-1. **Favorites store + toggle** — `favorites.json` (reuse winset save/load); add/remove one entry;
-   "is this favorite open?" via the URI-per-HWND cache. *(local-only, shippable)*
-2. **Dimmed-section UI + context menus** — separator + dimmed favorite rows; right-click
-   mark/unmark; left-click dimmed → relaunch. *(local-only, shippable)*
-3. **"Close (keep favorite)"** — right-click a running favorite → `close_window` (already exists from
-   Update Assist), stays in the list, drops to dimmed. *(local-only, shippable)*
-4. **Remote + kdeskdash** — add `running`/`favorite` fields; publish not-running favorites; route
-   non-HWND `id` → relaunch; write docs §5. kdeskdash rendering side is a **follow-up in the
-   kdeskdash project** (like the Apps §4 handoff — documented here, built there).
+1. ✅ **Favorites store + toggle** — `favorites.json` (shares a `write_entries`/`read_entries` helper
+   with named sets); `SetEntry::same_target` identity; `uri_cache` (HWND→entry) refreshed
+   incrementally so workspaceStorage is only read when a new window appears.
+2. ✅ **Dimmed-section UI + context menus** — separator + dimmed ○ favorite rows (build-tinted);
+   right-click Mark/Unfavorite (disabled when the folder can't be resolved); left-click dimmed →
+   `winset::launch`.
+3. ✅ **"Close (keep favorite)"** — right-click a favorited open row → `close_window`; entry stays and
+   drops to the dimmed group.
+4. ✅ **Remote + kdeskdash** — `running`/`favorite` on every instance row; not-open favorites appended
+   as `running:false` rows with `id` = folder URI; non-integer `id` routes to
+   `winset::launch_favorite` (reads the persisted list, so the subscriber needs no app state);
+   contract written as [docs §5](../../docs/kdeskdash-vscode-mode.md). kdeskdash rendering side is a
+   **follow-up in the kdeskdash project** (documented here, built there — like the Apps §4 handoff).
 
-Steps 1–3 are local-only and each independently shippable; step 4 mirrors the Apps remote work.
+### Post-build addition (Ken's review)
 
-## Open questions
+- **★ on favorited open windows.** Originally a favorite was only visible once *closed*. Now every
+  Code row reserves a fixed 15px left gutter and favorited open rows get a gold ★ in it, so marked and
+  unmarked rows stay left-aligned; the dimmed ○ moved into the same gutter column so both groups line
+  up. Name truncation accounts for the gutter.
 
-- kdeskdash dims via the `running:false` flag, or does it want a dedicated `dimmed` field? (Prefer
-  reusing `running` — one fewer field.)
+## Verification
+
+- `cargo fmt --check` clean; `clippy -D warnings` clean on remote / isolated-local / core.
+- 5 remote unit tests (3 from sprint 007 + 2 new: non-integer `id` → favorite relaunch while numeric
+  stays HWND focus; instance JSON flags favorites and appends not-open rows with URI ids).
+- Steps 1–3 exercised live by Ken (mark → close-keep → dimmed → relaunch → unfavorite).
+
+## Open questions / follow-ups
+
+- kdeskdash dims via the `running:false` flag (chosen: reuse `running`, one fewer field) — the
+  dashboard side is still unbuilt.
+- Step 4's remote path is **not yet exercised live** against kdeskdash — the contract is locked by unit
+  tests, but no dashboard renders these rows yet.
 - Do favorites and named window-sets (WI #469) eventually merge? For now keep separate; favorites are a
   living per-entry list, sets are named snapshots.

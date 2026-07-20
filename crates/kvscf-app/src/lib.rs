@@ -230,10 +230,18 @@ impl KvscfApp {
         self.refresh_uri_cache();
         self.last_scan = Instant::now();
 
-        // Publish the fresh lists to kdeskdash (no-op in the local build).
+        // Publish the fresh lists to kdeskdash (no-op in the local build). Favorites ride along:
+        // which open windows are starred, plus the not-open ones the dashboard greys out.
         #[cfg(feature = "remote")]
         if let Some(ch) = &self.channel {
-            ch.publish(&self.items, &self.edge, &self.apps);
+            let favorited: HashSet<i64> = self
+                .uri_cache
+                .iter()
+                .filter(|(_, e)| self.favorites.iter().any(|f| f.same_target(e)))
+                .map(|(hwnd, _)| *hwnd)
+                .collect();
+            let dimmed = self.dimmed_favorites();
+            ch.publish(&self.items, &self.edge, &self.apps, &favorited, &dimmed);
         }
     }
 

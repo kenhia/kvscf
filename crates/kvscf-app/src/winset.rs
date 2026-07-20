@@ -290,3 +290,14 @@ pub fn save_favorites(entries: &[SetEntry]) -> std::io::Result<()> {
     let path = favorites_path().ok_or_else(|| std::io::Error::other("no APPDATA"))?;
     write_entries(path, entries)
 }
+
+/// Relaunch a favorite by its folder URI — the action behind a dashboard tap on a not-open
+/// favorite row (whose published `id` *is* the URI). Reads the persisted list, so it works from
+/// the remote subscriber thread, which has no app state. `false` if no favorite matches.
+#[allow(dead_code)] // only called from the `remote` build
+pub fn launch_favorite(uri: &str) -> bool {
+    let Some(entry) = load_favorites().into_iter().find(|f| f.uri == uri) else {
+        return false;
+    };
+    launch(&entry).is_ok()
+}

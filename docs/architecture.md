@@ -95,6 +95,30 @@ on cleo, so no krcmd round-trip).
 
 Both live in the app library, so they work in `kvscf` and `kvscf-local` alike.
 
+## Code favorites (WI #478)
+
+VS Code is RAM-heavy per instance, so favorites let a session be **closed without being lost**. A
+favorite is just a `SetEntry` (build + folder URI + label), persisted to
+`%APPDATA%\kvscf\favorites.json`; identity is `same_target` = build + URI (label-independent, so the
+same folder in Stable vs Insiders are distinct favorites).
+
+On the Code tab: open windows render as usual with a **★** in a reserved left gutter when favorited
+(the gutter is always reserved so marked/unmarked rows stay aligned); favorites with **no open
+window** render **dimmed with ○** below a separator, and clicking one **relaunches** it via
+`winset::launch`. Right-click gives Mark/Unfavorite and, on a favorited open row, **"Close (keep
+favorite)"** — `close_window` frees the RAM and the entry drops straight into the dimmed group.
+
+"Is this favorite open?" needs each open window's URI, which is the expensive part (reading VS Code's
+`workspaceStorage`). So the app keeps a **`uri_cache: HWND → SetEntry`**, pruned each scan and filled
+only when a window it hasn't seen appears — steady state costs nothing, and matching is by URI (not
+workspace basename, which would collide for two folders both named `src`).
+
+Remote: instance rows gain `running` + `favorite`, and not-open favorites are appended as
+`running:false` rows whose **`id` is the folder URI** (no HWND exists). The focus command is unchanged
+in shape — kvscf routes an integer `id` to HWND focus and a non-integer `id` to
+`winset::launch_favorite`, which reads the persisted list (so the subscriber thread needs no app
+state). See [kdeskdash-vscode-mode.md](kdeskdash-vscode-mode.md) §5.
+
 ## Edge tab (`Kind`)
 
 `kvscf-core` enumerates in one pass and dispatches by process image: VS Code → `Instance`, Edge →

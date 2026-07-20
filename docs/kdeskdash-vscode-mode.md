@@ -154,6 +154,65 @@ kvscf validates the token, then **focuses the app if a matching window is open, 
 seconds). `app` takes precedence over `id` if both are present. The HWND-based
 `{ "id": … }` command (sections 2–3) is unchanged and still used for Code/Edge rows.
 
+## 5. Code favorites (sprint 008) — dimmed rows that **relaunch**
+
+Ken marks VS Code sessions as **favorites** so he can close RAM-heavy idle ones without losing them.
+A favorite with **no open window** still appears in the list — greyed — and tapping it **relaunches**
+the editor rather than focusing a window. This rides on the **existing** `kvscf:instances:<host>` key
+and the **existing** focus command: kdeskdash keeps echoing back whatever `id` the tapped row had, and
+kvscf decides focus-vs-relaunch. Only two things change on your side: **ordering** and **dimming**.
+
+### Instance rows gain two fields
+
+Every row in `kvscf:instances:<host>` now carries:
+
+- `running` — `true` for an actual open window, `false` for a favorite that isn't open.
+- `favorite` — `true` if this folder is one of Ken's favorites (open or not).
+
+Rows with `running:false` are **appended** to the same `instances` array:
+
+```json
+{
+  "id": "vscode-remote://ssh-remote+kai/home/ken/src/kyac",
+  "label": "kyac (kai)",
+  "workspace": "kyac",
+  "remote": "ssh",
+  "remote_host": "kai",
+  "app": "insiders",
+  "active_file": null,
+  "z_index": null,
+  "running": false,
+  "favorite": true
+}
+```
+
+**The important bit: for a `running:false` row, `id` is the folder URI, not an HWND** — a closed
+window has no handle. Treat `id` as opaque either way and echo it back verbatim; kvscf tells the two
+apart (an HWND parses as an integer, a URI never does).
+
+Field notes for these rows: `active_file` and `z_index` are `null` (nothing is open to report);
+`remote`/`remote_host` are derived best-effort (Ken only uses ssh remotes), `workspace`/`remote_host`
+are split back out of `label`.
+
+### Suggested rendering
+
+- **Sort `running:true` first**, then by label as you do today; render the `running:false` group after
+  them (the kvscf app draws a separator between the two groups).
+- **Grey out `running:false`** rows — they're launchable, not focusable. The kvscf app dims them and
+  marks them with `○`, and puts a **★** on open rows where `favorite:true`.
+- No new key to SCAN and no new command — just the two fields.
+
+### Command (unchanged shape)
+
+```json
+{ "token": "kvscf-<64 hex>", "id": "vscode-remote://ssh-remote+kai/home/ken/src/kyac" }
+```
+
+kvscf validates the token, sees a non-integer `id`, finds that favorite and **relaunches it**
+(`code`/`code-insiders --folder-uri`, reconnecting over SSH for remotes). Expect several seconds
+before the window exists; the next published snapshot will flip that row to `running:true` with a real
+HWND `id`. Tapping an open row is exactly as before.
+
 ## Reference
 
 - kvscf publisher/subscriber: `crates/kvscf-app/src/remote.rs` in this repo.
