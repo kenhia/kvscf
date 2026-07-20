@@ -506,8 +506,8 @@ mod tests {
             other => panic!("expected Focus, got {:?}", other.is_none()),
         }
         // Wrong token → rejected.
-        let bad = format!(r#"{{"token":"nope","id":"12345"}}"#);
-        assert!(parse_command(&bad, TOK).is_none());
+        let bad = r#"{"token":"nope","id":"12345"}"#;
+        assert!(parse_command(bad, TOK).is_none());
     }
 
     #[test]
