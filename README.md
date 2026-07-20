@@ -13,6 +13,8 @@ open — local and Remote-SSH — it turns "hunt through the taskbar thumbnails"
   colored by build (Insiders vs. stable) and bold, the remote host is muted italics. Sorted by name; a
   long name truncates but the host is always kept.
 - **Click to focus** — reliably foregrounds the exact window, even when it's minimized or buried.
+- **Favorites** — star the sessions you care about. VS Code is RAM-hungry per window, so close the ones
+  you're not using: a favorite stays in the list greyed out and one click reopens it right where it was.
 - **Two window modes** — a normal floating window, or an **AppBar "dock"** that reserves a screen edge
   like the taskbar, so maximized windows don't cover it.
 - **Update Assist** — one button for the near-daily VS Code Insiders update dance: close all but one

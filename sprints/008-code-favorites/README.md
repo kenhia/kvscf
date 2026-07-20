@@ -101,12 +101,11 @@ This mirrors the Apps `{app:<key>}` split, just carried in the shared `id` field
 - 5 remote unit tests (3 from sprint 007 + 2 new: non-integer `id` → favorite relaunch while numeric
   stays HWND focus; instance JSON flags favorites and appends not-open rows with URI ids).
 - Steps 1–3 exercised live by Ken (mark → close-keep → dimmed → relaunch → unfavorite).
+- **Step 4 verified end-to-end**: kdeskdash took the changes and Ken confirmed the whole system works
+  together — dimmed favorites render on the dashboard and tapping one relaunches the editor.
 
 ## Open questions / follow-ups
 
-- kdeskdash dims via the `running:false` flag (chosen: reuse `running`, one fewer field) — the
-  dashboard side is still unbuilt.
-- Step 4's remote path is **not yet exercised live** against kdeskdash — the contract is locked by unit
-  tests, but no dashboard renders these rows yet.
+- kdeskdash dims via the `running:false` flag (chosen: reuse `running`, one fewer field).
 - Do favorites and named window-sets (WI #469) eventually merge? For now keep separate; favorites are a
   living per-entry list, sets are named snapshots.
