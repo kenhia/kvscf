@@ -1,7 +1,8 @@
 # Sprint 010 — Emoji in window names (WI #489)
 
-Status: **built; awaiting Ken's visual confirm.** Emoji Ken adds to Edge window names showed as `?` /
-`??`. Now they render — monochrome (egui can't do color emoji).
+Status: **done — verified live by Ken.** Emoji Ken adds to Edge window names showed as `?` / `??`.
+Now they render — monochrome (egui can't do color emoji). Ken replicated all three windows on cleo
+and confirmed 🦀 / 🛠 / 🏗 render as clean silhouettes with no `?`/`??` and no trailing selector `?`.
 
 ## Root cause (from WI #489, proved live)
 
@@ -43,9 +44,9 @@ Full CI workflow run locally (fmt, `clippy --all-targets` for default and `kvscf
 --all-targets`, `cargo test`, `--build-info` → `remote=false`): green. Binary size: kvscf 6.08→7.06 MB,
 kvscf-local 5.5→6.48 MB (+~0.87 MB, the font).
 
-### Awaiting Ken
-- [ ] `ClaudeOnTheWeb 🦀` (cleo) shows the crab silhouette, not `?`.
-- [ ] `Pipes🛠️` and `🏗️ BUILD TEST` (kwork) show their glyphs, no `??`.
+### Verified live by Ken (all three replicated on cleo)
+- [x] `ClaudeOnTheWeb 🦀` → crab silhouette.
+- [x] `Pipes🛠️` and `🏗️ BUILD TEST` → wrench / crane silhouettes, no `??`, no trailing selector `?`.
 
 Reminder: **monochrome** — egui/epaint stores glyphs in grayscale and can't render color emoji, so
 these are black-and-white silhouettes, not the color glyphs.
