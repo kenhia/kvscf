@@ -70,6 +70,9 @@ const SCAN_INTERVAL: Duration = Duration::from_millis(1000);
 const AUTO_HIDE_DELAY: Duration = Duration::from_secs(2);
 const DOCK_REASSERT: Duration = Duration::from_secs(1);
 const BOLD_FAMILY: &str = "kvscf-bold";
+/// Left gutter reserved on every Code row for the favorite ★ / not-open ○ marker, so names stay
+/// aligned whether or not a row is marked (sprint 008).
+const FAV_GUTTER: f32 = 15.0;
 
 /// Whether this build includes the remote (kdeskdash) channel.
 #[cfg(feature = "remote")]
@@ -587,16 +590,17 @@ impl eframe::App for KvscfApp {
                                 ui.spacing_mut().item_spacing.y = 1.0;
                                 // Running windows — click to focus; right-click to (un)favorite.
                                 for item in &self.items {
-                                    let resp = draw_row(ui, item, &name_font, &host_font);
-                                    if resp.clicked() {
-                                        clicked = Some(item.hwnd);
-                                    }
                                     let hwnd = item.hwnd;
                                     let entry = self.uri_cache.get(&hwnd).cloned();
                                     let favorited = entry
                                         .as_ref()
                                         .map(|e| self.favorites.iter().any(|f| f.same_target(e)))
                                         .unwrap_or(false);
+                                    let resp =
+                                        draw_row(ui, item, &name_font, &host_font, favorited);
+                                    if resp.clicked() {
+                                        clicked = Some(item.hwnd);
+                                    }
                                     resp.context_menu(|ui| match entry {
                                         None => {
                                             ui.add_enabled(
@@ -777,6 +781,7 @@ fn draw_row(
     item: &Instance,
     name_font: &FontId,
     host_font: &FontId,
+    favorited: bool,
 ) -> egui::Response {
     let dark = ui.visuals().dark_mode;
     let width = ui.available_width();
@@ -799,8 +804,8 @@ fn draw_row(
     });
     let host_w = host_galley.as_ref().map(|g| g.size().x).unwrap_or(0.0);
 
-    // Name galley, truncated to the remaining width.
-    let avail_name = (width - pad * 2.0 - host_w).max(24.0);
+    // Name galley, truncated to the remaining width (less the ★ gutter).
+    let avail_name = (width - pad * 2.0 - FAV_GUTTER - host_w).max(24.0);
     let name_galley = {
         let mut job = LayoutJob::default();
         job.append(
@@ -830,7 +835,23 @@ fn draw_row(
             ui.painter()
                 .rect_filled(rect, 4.0, ui.visuals().widgets.hovered.weak_bg_fill);
         }
-        let nx = rect.left() + pad;
+        // ★ in the reserved gutter for favorited windows; the gutter is always reserved so
+        // marked and unmarked rows stay left-aligned with each other.
+        if favorited {
+            let star = ui.fonts(|f| {
+                f.layout_no_wrap(
+                    "★".to_string(),
+                    FontId::proportional(11.0),
+                    fav_star_color(dark),
+                )
+            });
+            ui.painter().galley(
+                egui::pos2(rect.left() + pad, rect.center().y - star.size().y / 2.0),
+                star,
+                Color32::PLACEHOLDER,
+            );
+        }
+        let nx = rect.left() + pad + FAV_GUTTER;
         ui.painter().galley(
             egui::pos2(nx, rect.center().y - name_h / 2.0),
             name_galley,
@@ -844,7 +865,20 @@ fn draw_row(
             );
         }
     }
-    resp.on_hover_text(hover_text(item))
+    let mut tip = hover_text(item);
+    if favorited {
+        tip.push_str("\n★ favorite");
+    }
+    resp.on_hover_text(tip)
+}
+
+/// Gold accent for the favorite ★.
+fn fav_star_color(dark: bool) -> Color32 {
+    if dark {
+        Color32::from_rgb(230, 185, 70)
+    } else {
+        Color32::from_rgb(185, 140, 20)
+    }
 }
 
 /// Draw one dimmed "favorite not currently open" row (sprint 008): a ○ dot + the label in a muted,
@@ -859,17 +893,9 @@ fn draw_fav_row(
     let pad = 8.0;
     let color = fav_dim_color(fav.app, dark);
 
+    // Label only — the ○ is painted into the same reserved gutter the ★ uses, so dimmed rows
+    // line up with the running ones above them.
     let mut job = LayoutJob::default();
-    job.append(
-        "○ ",
-        0.0,
-        TextFormat {
-            color,
-            font_id: FontId::proportional(11.0),
-            valign: egui::Align::Center,
-            ..Default::default()
-        },
-    );
     job.append(
         &fav.label,
         0.0,
@@ -879,7 +905,7 @@ fn draw_fav_row(
             ..Default::default()
         },
     );
-    job.wrap.max_width = width - pad * 2.0;
+    job.wrap.max_width = (width - pad * 2.0 - FAV_GUTTER).max(24.0);
     job.wrap.max_rows = 1;
     job.wrap.break_anywhere = false;
     job.wrap.overflow_character = Some('…');
@@ -892,8 +918,18 @@ fn draw_fav_row(
             ui.painter()
                 .rect_filled(rect, 4.0, ui.visuals().widgets.hovered.weak_bg_fill);
         }
+        let dot =
+            ui.fonts(|f| f.layout_no_wrap("○".to_string(), FontId::proportional(11.0), color));
         ui.painter().galley(
-            egui::pos2(rect.left() + pad, rect.center().y - galley.size().y / 2.0),
+            egui::pos2(rect.left() + pad, rect.center().y - dot.size().y / 2.0),
+            dot,
+            Color32::PLACEHOLDER,
+        );
+        ui.painter().galley(
+            egui::pos2(
+                rect.left() + pad + FAV_GUTTER,
+                rect.center().y - galley.size().y / 2.0,
+            ),
             galley,
             Color32::PLACEHOLDER,
         );
