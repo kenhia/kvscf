@@ -342,24 +342,29 @@ impl KvscfApp {
     }
 
     /// Docked-only: behave like the taskbar around fullscreen apps (WI #481). While one owns the
-    /// foreground on our monitor, drop always-on-top so it covers us; restore afterwards. Only
-    /// acts on a *state change*, so we aren't pushing a viewport command every tick.
+    /// foreground on our monitor, sink below it; come back afterwards. Only acts on a *state
+    /// change*, so we aren't hammering `SetWindowPos` every tick.
+    ///
+    /// Z-order is driven straight through Win32 rather than `ViewportCommand::WindowLevel`, for
+    /// two reasons: the yield needs `HWND_BOTTOM` (merely clearing topmost leaves us at the top of
+    /// the non-topmost band, still above the fullscreen app — measured), and viewport commands are
+    /// applied asynchronously on the next frame, which would race the ordering of the two
+    /// `SetWindowPos` calls that the yield requires.
     ///
     /// The AppBar reservation deliberately stays registered throughout — fullscreen apps use the
-    /// full monitor bounds and ignore the work area anyway (the taskbar keeps its band too), so
-    /// only the topmost flag needs to move.
-    fn update_fullscreen_yield(&mut self, ctx: &egui::Context) {
+    /// full monitor bounds and ignore the work area anyway (the taskbar keeps its band too).
+    fn update_fullscreen_yield(&mut self) {
         let Some(hwnd) = self.hwnd else { return };
         let fullscreen = dock::fullscreen_app_present(hwnd);
         if fullscreen == self.fullscreen_active {
             return;
         }
         self.fullscreen_active = fullscreen;
-        ctx.send_viewport_cmd(ViewportCommand::WindowLevel(if fullscreen {
-            WindowLevel::Normal
+        if fullscreen {
+            dock::yield_z_order(hwnd);
         } else {
-            WindowLevel::AlwaysOnTop
-        }));
+            dock::restore_z_order(hwnd);
+        }
     }
 
     /// Re-assert the reserved left band and snap our window into it (physical pixels).
@@ -449,7 +454,7 @@ impl eframe::App for KvscfApp {
         // z-order to any fullscreen app on our monitor, taskbar-style (WI #481).
         if self.docked && self.appbar_registered && self.last_dock_assert.elapsed() >= DOCK_REASSERT
         {
-            self.update_fullscreen_yield(ctx);
+            self.update_fullscreen_yield();
             self.reassert_dock(ctx);
         }
 

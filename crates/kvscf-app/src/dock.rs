@@ -27,7 +27,8 @@ mod imp {
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         GetClassNameW, GetForegroundWindow, GetSystemMetrics, GetWindowRect, GetWindowTextW,
-        SetWindowPos, HWND_TOP, SM_CYSCREEN, SWP_NOACTIVATE, SWP_NOZORDER,
+        SetWindowPos, HWND_BOTTOM, HWND_NOTOPMOST, HWND_TOP, HWND_TOPMOST, SM_CYSCREEN,
+        SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
     };
 
     // Notification message Windows would post to our HWND (WM_USER-based). We don't process
@@ -90,6 +91,38 @@ mod imp {
         let mut abd = base(hwnd);
         unsafe {
             SHAppBarMessage(ABM_REMOVE, &mut abd);
+        }
+    }
+
+    /// Step aside for a fullscreen app: clear always-on-top **and drop to the bottom of the
+    /// z-order** — what `ABN_FULLSCREENAPP` prescribes for appbars.
+    ///
+    /// Both calls are needed, and that's the subtle part (measured live, WI #481): clearing
+    /// `WS_EX_TOPMOST` alone is *not* enough, because `HWND_NOTOPMOST` parks the window at the
+    /// **top of the non-topmost band** — still above the fullscreen app. The first call leaves the
+    /// topmost band, the second sinks us below everything.
+    pub fn yield_z_order(hwnd_raw: isize) {
+        let hwnd = HWND(hwnd_raw as _);
+        let flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE;
+        unsafe {
+            let _ = SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, flags);
+            let _ = SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0, flags);
+        }
+    }
+
+    /// Restore always-on-top once the fullscreen app is gone.
+    pub fn restore_z_order(hwnd_raw: isize) {
+        let hwnd = HWND(hwnd_raw as _);
+        unsafe {
+            let _ = SetWindowPos(
+                hwnd,
+                HWND_TOPMOST,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
         }
     }
 
@@ -201,6 +234,11 @@ mod imp {
     pub fn describe_foreground() -> String {
         "(windows only)".to_string()
     }
+    pub fn yield_z_order(_hwnd_raw: isize) {}
+    pub fn restore_z_order(_hwnd_raw: isize) {}
 }
 
-pub use imp::{describe_foreground, fullscreen_app_present, register, remove, set_pos};
+pub use imp::{
+    describe_foreground, fullscreen_app_present, register, remove, restore_z_order, set_pos,
+    yield_z_order,
+};

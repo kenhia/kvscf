@@ -1,6 +1,6 @@
 # Sprint 009 — Dock yields to fullscreen apps (WI #481)
 
-Status: **built; live-verified for WoW fullscreen, awaiting Ken's checks on the rest.** A docked
+Status: **done — verified live with WoW and VS Code Insiders F11.** A docked
 kvscf sat on top of fullscreen apps — Ken saw the rail over WoW. The taskbar drops behind fullscreen
 apps; now kvscf does too (which also covers browser/app **F11**).
 
@@ -32,13 +32,36 @@ F11 uniformly (all cover `rcMonitor`), while a merely **maximized** window canno
 maximized respects `rcWork`, which already excludes our reserved band. That's the distinction we
 want, and it's why this is a rect test rather than a window-style/caption test.
 
-`update_fullscreen_yield` then flips `WindowLevel` (`AlwaysOnTop` ↔ `Normal`) **only on a state
-change**, so we're not pushing a viewport command every tick. `apply_mode` clears the flag on any
-dock/undock so the yield can't get stuck.
+`update_fullscreen_yield` acts **only on a state change**, so we're not hammering `SetWindowPos`
+every tick. `apply_mode` clears the flag on any dock/undock so the yield can't get stuck.
 
-**The AppBar reservation stays registered throughout.** Only the topmost flag needs to move —
-fullscreen apps use full monitor bounds and ignore the work area anyway (the taskbar keeps its band
-too). Position re-assert uses `SWP_NOZORDER`, so it won't fight the yield.
+### The bug worth remembering: un-topmost ≠ behind
+
+The first implementation "dropped always-on-top" via `ViewportCommand::WindowLevel(Normal)` — and it
+**didn't work**, while looking like it should. Instrumenting the live window proved detection and the
+toggle were both fine:
+
+```
+29  railTOPMOST=True   coversMonitor=True    <- fullscreen detected
+30  railTOPMOST=False  coversMonitor=True    <- topmost cleared, correctly, within ~1s
+39  railTOPMOST=True   coversMonitor=False   <- restored on exit
+```
+
+…yet the rail still sat on top. The reason: **`HWND_NOTOPMOST` parks a window at the *top of the
+non-topmost band*** — above every ordinary window, including the fullscreen app. Clearing the topmost
+style is not the same as going behind. That's why `ABN_FULLSCREENAPP` says an appbar must drop to the
+**bottom of the z-order**; it's a literal instruction, not a description.
+
+So `yield_z_order` does both: `HWND_NOTOPMOST` to leave the topmost band, then `HWND_BOTTOM` to sink
+below everything. `restore_z_order` puts back `HWND_TOPMOST`.
+
+Z-order is driven **straight through Win32** rather than `ViewportCommand::WindowLevel`, because
+viewport commands are applied asynchronously on the next frame — which would race the ordering of the
+two `SetWindowPos` calls the yield depends on.
+
+**The AppBar reservation stays registered throughout** — fullscreen apps use full monitor bounds and
+ignore the work area anyway (the taskbar keeps its band too). The 1s position re-assert uses
+`SWP_NOZORDER`, so it won't undo the sink.
 
 ## Verification
 
@@ -55,17 +78,20 @@ borderless-windowed behavior as unconfirmed — this settles it empirically inst
 Window rect matches monitor bounds exactly → detected, no ambiguity about which fullscreen mode WoW
 was in. Gate: `fmt --check` clean, `clippy -D warnings` clean on remote/local/core, 5 app tests pass.
 
-### Still to confirm (Ken, docked on the primary)
-- [ ] Rail is actually **hidden behind** WoW (detection is proven; the z-order effect is not yet).
-- [ ] **Alt-tab out of WoW → rail returns** (the restore half; the probe never caught a transition
-      because WoW held foreground for all 20 samples).
-- [ ] Browser **F11** → hidden; Esc → returns.
-- [ ] A merely **maximized** window → rail **still visible** ← the main regression risk.
-- [ ] Fullscreen app on a **secondary** monitor → docked rail on primary stays visible.
-- [ ] Undock/redock and exit while fullscreen is running → no stuck state, AppBar removed cleanly.
+### Confirmed live by Ken (docked on the primary)
+- [x] **WoW** → rail hidden behind it; returns on exit.
+- [x] **VS Code Insiders F11** → rail hidden; returns on toggle back.
+
+### Not explicitly re-tested after the fix
+- [ ] A merely **maximized** window → rail should stay visible. The rect test makes this structurally
+      impossible to false-trigger (maximized respects `rcWork`, which excludes our band), and it held
+      through all the instrumented sampling — but it wasn't deliberately exercised post-fix.
+- [ ] Fullscreen app on a **secondary** monitor → docked rail on primary unaffected (the
+      same-monitor guard covers it; not exercised).
 
 ## Follow-up
 
 Handling `ABN_FULLSCREENAPP` properly (subclass the HWND, `HWND_BOTTOM` on TRUE / restore on FALSE)
-stays available as a refinement — it would react instantly instead of within ~1s. Only worth it if
-the poll's latency is noticeable in practice.
+stays available as a refinement — it would react instantly instead of within ~1s. Ken reported the
+poll's latency as unnoticeable in practice, so this is not currently worth the message-loop
+interception it would cost.
