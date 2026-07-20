@@ -91,6 +91,25 @@ pub fn run() -> eframe::Result<()> {
         return Ok(());
     }
 
+    // Headless probe: confirm the bundled emoji font covers the glyphs Ken uses in window names
+    // (WI #489 / sprint 010). `bold=true` for each means named rows render them.
+    if std::env::args().any(|a| a == "--probe-glyphs") {
+        let ctx = egui::Context::default();
+        let has_bold = install_bold_font(&ctx);
+        let _ = ctx.run(egui::RawInput::default(), |_| {}); // realize the font atlas
+        let bold = FontId::new(14.5, FontFamily::Name(Arc::from(BOLD_FAMILY)));
+        let prop = FontId::proportional(14.5);
+        println!("bold family loaded: {has_bold}  (named rows use the bold family)\n");
+        // crab (cleo), hammer-and-wrench + building (kwork), the FE0F selector, and two sanity
+        // BMP symbols egui's subset is known to include.
+        for c in ['🦀', '🛠', '🏗', '\u{FE0F}', '★', '✉'] {
+            let b = ctx.fonts(|f| f.has_glyph(&bold, c));
+            let p = ctx.fonts(|f| f.has_glyph(&prop, c));
+            println!("U+{:05X} {:?}  bold={b:<5} proportional={p}", c as u32, c);
+        }
+        return Ok(());
+    }
+
     // Headless probe: load the Apps config and resolve running state (sprint 007 verification).
     if std::env::args().any(|a| a == "--dump-apps") {
         let entries = apps::scan();
@@ -1193,30 +1212,61 @@ fn hover_text(item: &Instance) -> String {
     )
 }
 
-/// Load Segoe UI Bold from the system fonts dir and register it as [`BOLD_FAMILY`].
-/// Returns whether it was available (fallback: regular proportional).
+/// Family name for our bundled monochrome emoji fallback.
+const EMOJI_FAMILY: &str = "kvscf-emoji";
+
+/// Install fonts: a bundled monochrome emoji fallback (so emoji in window names render instead of
+/// `?`, WI #489) plus Segoe UI Bold registered as [`BOLD_FAMILY`]. egui/epaint renders **monochrome
+/// glyphs only** — no color emoji — so emoji appear as black-and-white silhouettes.
+///
+/// Returns whether the bold face was available (if not, rows fall back to regular proportional, but
+/// the emoji fallback is still installed).
 fn install_bold_font(ctx: &egui::Context) -> bool {
-    // Candidate bold faces present on stock Windows, in preference order.
+    let mut fonts = egui::FontDefinitions::default();
+
+    // Bundled emoji font (instanced+subset Noto Emoji, OFL — see assets/NotoEmoji-kvscf.README.md).
+    // Broader coverage than egui's built-in subset, which lacks e.g. U+1F980 🦀 / U+1F3D7 🏗.
+    // Insert right after each stock family's primary face so text stays in the primary font and
+    // only emoji fall through to it.
+    fonts.font_data.insert(
+        EMOJI_FAMILY.to_owned(),
+        egui::FontData::from_static(include_bytes!("../../../assets/NotoEmoji-kvscf.ttf")),
+    );
+    for fam in [FontFamily::Proportional, FontFamily::Monospace] {
+        let v = fonts.families.entry(fam).or_default();
+        v.insert(1.min(v.len()), EMOJI_FAMILY.to_owned());
+    }
+
+    // Bold face from the system (WI #465 styling), as its own family with the emoji fallback.
     let candidates = [
         r"C:\Windows\Fonts\segoeuib.ttf", // Segoe UI Bold
         r"C:\Windows\Fonts\seguisb.ttf",  // Segoe UI Semibold
         r"C:\Windows\Fonts\calibrib.ttf", // Calibri Bold
         r"C:\Windows\Fonts\arialbd.ttf",  // Arial Bold
     ];
-    let Some(bytes) = candidates.iter().find_map(|p| std::fs::read(p).ok()) else {
-        return false;
+    let has_bold = if let Some(bytes) = candidates.iter().find_map(|p| std::fs::read(p).ok()) {
+        fonts
+            .font_data
+            .insert(BOLD_FAMILY.to_owned(), egui::FontData::from_owned(bytes));
+        let v = fonts
+            .families
+            .entry(FontFamily::Name(Arc::from(BOLD_FAMILY)))
+            .or_default();
+        v.extend([BOLD_FAMILY.to_owned(), EMOJI_FAMILY.to_owned()]);
+        // Also chain egui's bundled emoji/symbol fonts (already in font_data) for the union of
+        // coverage — e.g. symbols our subset omits.
+        for extra in ["NotoEmoji-Regular", "emoji-icon-font"] {
+            if fonts.font_data.contains_key(extra) {
+                v.push(extra.to_owned());
+            }
+        }
+        true
+    } else {
+        false
     };
-    let mut fonts = egui::FontDefinitions::default();
-    fonts
-        .font_data
-        .insert(BOLD_FAMILY.to_owned(), egui::FontData::from_owned(bytes));
-    fonts
-        .families
-        .entry(FontFamily::Name(Arc::from(BOLD_FAMILY)))
-        .or_default()
-        .push(BOLD_FAMILY.to_owned());
+
     ctx.set_fonts(fonts);
-    true
+    has_bold
 }
 
 /// Named-mutex single-instance guard. Returns `true` if this is the first instance.
