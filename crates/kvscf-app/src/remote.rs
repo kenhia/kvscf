@@ -3,11 +3,15 @@
 //! Contract (see `docs/kdeskdash-vscode-mode.md`):
 //! - **Publish** the instance list to `kvscf:instances:<host>` (JSON String, TTL 10s,
 //!   republished ~every app refresh). kdeskdash SCANs `kvscf:instances:*` and renders rows.
+//!   Each row carries `running` + `favorite`; **favorites with no open window are appended as
+//!   `running:false` rows whose `id` is the folder URI** rather than an HWND (sprint 008).
 //! - **Publish** the configured apps to `kvscf:apps:<host>` (JSON, same TTL); each is
 //!   `{key,label,running,id?}` — `id` is the HWND when running (sprint 007 Apps tab).
-//! - **Subscribe** to `kvscf:focus:<host>` (pub/sub); on `{token,id,maximize}` foreground that
-//!   HWND, or on `{token,app:<key>}` **focus-if-running-else-launch** that app
-//!   (`crate::apps::activate`). Token gates both.
+//! - **Subscribe** to `kvscf:focus:<host>` (pub/sub). The dashboard just echoes back the tapped
+//!   row's id, and we route it: `{token,id:<int>,maximize}` foregrounds that HWND;
+//!   `{token,id:<uri>}` relaunches that closed favorite (`crate::winset::launch_favorite`);
+//!   `{token,app:<key>}` does **focus-if-running-else-launch** for a configured app
+//!   (`crate::apps::activate`). Token gates all three.
 //!
 //! Redis itself is unauthenticated (trusted LAN), so `KVSCF_TOKEN` is the app-level gate on the
 //! focus command (the only action). Endpoint + token come from env / a `.env` file.
@@ -22,7 +26,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use kvscf_core::{focus_with, App, EdgeWindow, Instance, Remote};
 
+use std::collections::HashSet;
+
 use crate::apps::{self, AppEntry};
+use crate::winset::{self, SetEntry};
 
 const DEFAULT_HOST: &str = "192.168.1.144"; // rpidash2 LAN IP (pinned, per handoff)
 const DEFAULT_PORT: u16 = 6380;
@@ -89,11 +96,14 @@ impl Config {
     }
 }
 
-/// One published snapshot: the VS Code instances, the Edge windows, and the configured apps.
+/// One published snapshot: the VS Code instances, the Edge windows, the configured apps, and the
+/// favorites overlay (which open windows are starred + the favorites that aren't open).
 struct Snapshot {
     instances: Vec<Instance>,
     edge: Vec<EdgeWindow>,
     apps: Vec<AppEntry>,
+    favorited: HashSet<i64>,
+    dimmed_favorites: Vec<SetEntry>,
 }
 
 /// The app-facing handle. Owns the sender that feeds the publisher thread.
@@ -133,12 +143,22 @@ impl Channel {
         Some(Channel { tx, host })
     }
 
-    /// Hand the latest window/app lists to the publisher thread (non-blocking).
-    pub fn publish(&self, items: &[Instance], edge: &[EdgeWindow], apps: &[AppEntry]) {
+    /// Hand the latest window/app lists to the publisher thread (non-blocking). `favorited` is the
+    /// set of open HWNDs that are starred; `dimmed_favorites` are favorites with no open window.
+    pub fn publish(
+        &self,
+        items: &[Instance],
+        edge: &[EdgeWindow],
+        apps: &[AppEntry],
+        favorited: &HashSet<i64>,
+        dimmed_favorites: &[SetEntry],
+    ) {
         let _ = self.tx.send(Snapshot {
             instances: items.to_vec(),
             edge: edge.to_vec(),
             apps: apps.to_vec(),
+            favorited: favorited.clone(),
+            dimmed_favorites: dimmed_favorites.to_vec(),
         });
     }
 
@@ -190,7 +210,12 @@ fn publisher_loop(cfg: Config, rx: Receiver<Snapshot>) {
             };
             let ok = set(
                 &inst_key,
-                build_instances_json(&cfg, &latest.instances),
+                build_instances_json(
+                    &cfg,
+                    &latest.instances,
+                    &latest.favorited,
+                    &latest.dimmed_favorites,
+                ),
                 &mut con,
             ) && set(&edge_key, build_edge_json(&cfg, &latest.edge), &mut con)
                 && set(&apps_key, build_apps_json(&cfg, &latest.apps), &mut con);
@@ -241,6 +266,10 @@ fn subscriber_loop(cfg: Config) {
                 Some(Command::App { key }) => {
                     apps::activate(&key);
                 }
+                // Relaunch a favorite whose window is closed (reads the persisted list).
+                Some(Command::Favorite { uri }) => {
+                    winset::launch_favorite(&uri);
+                }
                 None => {}
             }
         }
@@ -248,9 +277,17 @@ fn subscriber_loop(cfg: Config) {
     }
 }
 
-/// Build the instance-list JSON payload.
-fn build_instances_json(cfg: &Config, items: &[Instance]) -> String {
-    let instances: Vec<serde_json::Value> = items
+/// Build the instance-list JSON payload. Open windows carry `running: true` plus a `favorite`
+/// flag; favorites with no open window are appended as `running: false` rows whose **`id` is the
+/// folder URI** rather than an HWND (sprint 008) — the dashboard greys those and echoes the id
+/// back to relaunch them.
+fn build_instances_json(
+    cfg: &Config,
+    items: &[Instance],
+    favorited: &HashSet<i64>,
+    dimmed: &[SetEntry],
+) -> String {
+    let mut instances: Vec<serde_json::Value> = items
         .iter()
         .map(|i| {
             serde_json::json!({
@@ -262,9 +299,27 @@ fn build_instances_json(cfg: &Config, items: &[Instance]) -> String {
                 "app": app_str(i.app),
                 "active_file": i.active_file,
                 "z_index": i.z_index,
+                "running": true,
+                "favorite": favorited.contains(&i.hwnd),
             })
         })
         .collect();
+
+    instances.extend(dimmed.iter().map(|f| {
+        let (workspace, host) = split_label(&f.label);
+        serde_json::json!({
+            "id": f.uri,                       // folder URI, not an HWND — it has no window
+            "label": f.label,
+            "workspace": workspace,
+            "remote": if host.is_some() { "ssh" } else { "local" }, // best-effort from the URI
+            "remote_host": host,
+            "app": app_str(f.app),
+            "active_file": serde_json::Value::Null,
+            "z_index": serde_json::Value::Null,
+            "running": false,
+            "favorite": true,
+        })
+    }));
 
     serde_json::json!({
         "host": cfg.this_host,
@@ -272,6 +327,19 @@ fn build_instances_json(cfg: &Config, items: &[Instance]) -> String {
         "instances": instances,
     })
     .to_string()
+}
+
+/// Split a `workspace (host)` label back into its parts (`host` is `None` when local).
+fn split_label(label: &str) -> (String, Option<String>) {
+    if let Some(idx) = label.rfind(" (") {
+        if label.ends_with(')') {
+            return (
+                label[..idx].to_string(),
+                Some(label[idx + 2..label.len() - 1].to_string()),
+            );
+        }
+    }
+    (label.to_string(), None)
 }
 
 /// Build the Edge-window JSON payload (WI #474). Same focus channel — `id` is the HWND.
@@ -327,10 +395,18 @@ enum Command {
     Focus { hwnd: i64, maximize: bool },
     /// Focus-if-running-else-launch a configured app by key (Apps tab).
     App { key: String },
+    /// Relaunch a not-open Code favorite by folder URI (sprint 008).
+    Favorite { uri: String },
 }
 
-/// Parse + authenticate a command. Returns `None` unless the token matches. A payload with `id`
-/// is a [`Command::Focus`]; one with `app` is a [`Command::App`].
+/// Parse + authenticate a command. Returns `None` unless the token matches.
+///
+/// Routing, so kdeskdash can stay uniform (it just echoes back the tapped row's `id`):
+/// - `app` present → [`Command::App`].
+/// - `id` parses as an integer → an HWND → [`Command::Focus`].
+/// - `id` is any other string → a favorite's folder URI → [`Command::Favorite`]. A not-open
+///   favorite has no HWND, so its published `id` is the URI; URIs never parse as integers, which
+///   makes the split unambiguous.
 fn parse_command(payload: &str, expected_token: &str) -> Option<Command> {
     let v: serde_json::Value = serde_json::from_str(payload).ok()?;
     if v.get("token")?.as_str()? != expected_token {
@@ -341,9 +417,16 @@ fn parse_command(payload: &str, expected_token: &str) -> Option<Command> {
             key: app.to_string(),
         });
     }
-    let hwnd = v.get("id")?.as_str()?.parse::<i64>().ok()?;
-    let maximize = v.get("maximize").and_then(|m| m.as_bool()).unwrap_or(false);
-    Some(Command::Focus { hwnd, maximize })
+    let id = v.get("id")?.as_str()?;
+    match id.parse::<i64>() {
+        Ok(hwnd) => {
+            let maximize = v.get("maximize").and_then(|m| m.as_bool()).unwrap_or(false);
+            Some(Command::Focus { hwnd, maximize })
+        }
+        Err(_) => Some(Command::Favorite {
+            uri: id.to_string(),
+        }),
+    }
 }
 
 fn remote_kind(remote: &Remote) -> &'static str {
@@ -440,6 +523,62 @@ mod tests {
             parse_command(&both, TOK),
             Some(Command::App { .. })
         ));
+    }
+
+    #[test]
+    fn non_numeric_id_routes_to_favorite_relaunch() {
+        // A not-open favorite publishes its folder URI as `id`; it must not be read as an HWND.
+        let uri = "vscode-remote://ssh-remote+kai/home/ken/src/kyac";
+        let msg = format!(r#"{{"token":"{TOK}","id":"{uri}"}}"#);
+        match parse_command(&msg, TOK) {
+            Some(Command::Favorite { uri: got }) => assert_eq!(got, uri),
+            _ => panic!("expected Favorite command"),
+        }
+        // A numeric id is still an HWND focus.
+        let hwnd_msg = format!(r#"{{"token":"{TOK}","id":"98765"}}"#);
+        assert!(matches!(
+            parse_command(&hwnd_msg, TOK),
+            Some(Command::Focus { hwnd: 98765, .. })
+        ));
+    }
+
+    #[test]
+    fn instances_json_flags_favorites_and_appends_not_open_ones() {
+        let cfg = Config {
+            redis_host: "h".into(),
+            redis_port: 1,
+            token: TOK.into(),
+            this_host: "cleo".into(),
+        };
+        let inst = Instance {
+            hwnd: 42,
+            app: App::Insiders,
+            workspace: "korg".into(),
+            remote: Remote::Ssh("kai".into()),
+            active_file: None,
+            z_index: 0,
+        };
+        let favorited: HashSet<i64> = [42].into_iter().collect();
+        let dimmed = vec![SetEntry {
+            app: App::Insiders,
+            uri: "vscode-remote://ssh-remote+kai/home/ken/src/kyac".into(),
+            label: "kyac (kai)".into(),
+        }];
+        let v: serde_json::Value =
+            serde_json::from_str(&build_instances_json(&cfg, &[inst], &favorited, &dimmed))
+                .unwrap();
+        let arr = v["instances"].as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        // Open + starred.
+        assert_eq!(arr[0]["id"], "42");
+        assert_eq!(arr[0]["running"], true);
+        assert_eq!(arr[0]["favorite"], true);
+        // Not open: id is the URI, running false, label split back into workspace/host.
+        assert_eq!(arr[1]["id"], dimmed[0].uri);
+        assert_eq!(arr[1]["running"], false);
+        assert_eq!(arr[1]["favorite"], true);
+        assert_eq!(arr[1]["workspace"], "kyac");
+        assert_eq!(arr[1]["remote_host"], "kai");
     }
 
     #[test]
