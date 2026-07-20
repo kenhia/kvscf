@@ -110,6 +110,23 @@ pub fn run() -> eframe::Result<()> {
         return Ok(());
     }
 
+    // Headless probe: sample fullscreen detection (WI #481 verification). Run it, then switch to
+    // the app under test (WoW fullscreen / borderless, browser F11, or just a maximized window)
+    // and read the samples back — `fullscreen=` is exactly what the docked rail acts on.
+    if std::env::args().any(|a| a == "--probe-fullscreen") {
+        println!("Sampling the foreground window every 500ms for 20s.");
+        println!("Switch to the app you want to test now; a maximized window should stay false.\n");
+        for i in 0..40 {
+            println!(
+                "{i:>3}  fullscreen={:<5}  {}",
+                dock::fullscreen_app_present(0),
+                dock::describe_foreground()
+            );
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        return Ok(());
+    }
+
     // Headless probe: resolve open windows -> folder URIs (WI #469 verification).
     if std::env::args().any(|a| a == "--dump-set") {
         let (resolved, unresolved) = winset::resolve_open_set();
@@ -172,6 +189,8 @@ struct KvscfApp {
     appbar_registered: bool,
     mode_applied: bool,
     last_dock_assert: Instant,
+    /// Docked-only: are we currently yielding z-order to a fullscreen app? (WI #481)
+    fullscreen_active: bool,
     ua_state: UaState,
     ua_relaunch: Vec<winset::SetEntry>,
     ua_closed: usize,
@@ -201,6 +220,7 @@ impl KvscfApp {
             appbar_registered: false,
             mode_applied: false,
             last_dock_assert: Instant::now(),
+            fullscreen_active: false,
             ua_state: UaState::Idle,
             ua_relaunch: Vec::new(),
             ua_closed: 0,
@@ -300,6 +320,9 @@ impl KvscfApp {
     /// decorations + always-on-top accordingly.
     fn apply_mode(&mut self, ctx: &egui::Context) {
         let Some(hwnd) = self.hwnd else { return };
+        // Either branch sets the window level explicitly below, so any fullscreen yield in effect
+        // is now moot — clear it so the state can't get stuck across a dock/undock.
+        self.fullscreen_active = false;
         if self.docked {
             ctx.send_viewport_cmd(ViewportCommand::Decorations(false));
             ctx.send_viewport_cmd(ViewportCommand::WindowLevel(WindowLevel::AlwaysOnTop));
@@ -316,6 +339,27 @@ impl KvscfApp {
             ctx.send_viewport_cmd(ViewportCommand::Decorations(true));
             ctx.send_viewport_cmd(ViewportCommand::WindowLevel(WindowLevel::Normal));
         }
+    }
+
+    /// Docked-only: behave like the taskbar around fullscreen apps (WI #481). While one owns the
+    /// foreground on our monitor, drop always-on-top so it covers us; restore afterwards. Only
+    /// acts on a *state change*, so we aren't pushing a viewport command every tick.
+    ///
+    /// The AppBar reservation deliberately stays registered throughout — fullscreen apps use the
+    /// full monitor bounds and ignore the work area anyway (the taskbar keeps its band too), so
+    /// only the topmost flag needs to move.
+    fn update_fullscreen_yield(&mut self, ctx: &egui::Context) {
+        let Some(hwnd) = self.hwnd else { return };
+        let fullscreen = dock::fullscreen_app_present(hwnd);
+        if fullscreen == self.fullscreen_active {
+            return;
+        }
+        self.fullscreen_active = fullscreen;
+        ctx.send_viewport_cmd(ViewportCommand::WindowLevel(if fullscreen {
+            WindowLevel::Normal
+        } else {
+            WindowLevel::AlwaysOnTop
+        }));
     }
 
     /// Re-assert the reserved left band and snap our window into it (physical pixels).
@@ -401,9 +445,11 @@ impl eframe::App for KvscfApp {
             self.apply_mode(ctx);
             self.mode_applied = true;
         }
-        // While docked, keep re-asserting the reserved band (covers taskbar/res changes).
+        // While docked, keep re-asserting the reserved band (covers taskbar/res changes) and yield
+        // z-order to any fullscreen app on our monitor, taskbar-style (WI #481).
         if self.docked && self.appbar_registered && self.last_dock_assert.elapsed() >= DOCK_REASSERT
         {
+            self.update_fullscreen_yield(ctx);
             self.reassert_dock(ctx);
         }
 
