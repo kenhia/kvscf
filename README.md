@@ -36,6 +36,45 @@ instances.
   window on the panel to foreground it on your PC. That side takes some customization for your
   environment, but it's quick with an agent's help.
 
+## Code tab: window titles
+
+kvscf reads each VS Code window's **workspace** and **remote host** out of its *title bar text* (there's
+no API for "what folder is this window"). It expects the **folder name first** in the title — e.g.
+`kvscf - README.md - Visual Studio Code` or `kvllm [SSH: kai] - leaderboard.md - …`.
+
+VS Code's **default** `window.title` puts the *active file* first, so kvscf would show the filename
+where you want the project name. This is a deliberate design choice — a title-first-by-folder layout is
+much nicer once you keep a dozen editor windows open — but it means kvscf needs the title arranged that
+way. Two ways to get there:
+
+**1. Use a folder-first `window.title` (easiest).** In your VS Code user settings (`settings.json`, and
+in *both* Stable and Insiders if you run both), set:
+
+```jsonc
+"window.title": "${dirty}${separator}${rootName}${separator}${activeEditorShort}${separator}${appName}${separator}${profileName}"
+```
+
+That's the author's setting; it gives you a dirty-dot, the folder, the active file, and the edition.
+kvscf actually needs **less** than that — the one hard requirement is that **`${rootName}` is the first
+` - `-separated piece.** Any of these work:
+
+| `window.title` starts with… | works | notes |
+|---|---|---|
+| `${dirty}${separator}${rootName}${separator}…` | ✅ | the recommended form |
+| `${rootName}${separator}…` | ✅ | drop the dirty-dot if you like |
+| `${rootName}` (nothing after) | ✅ | folder + host only, no active-file label |
+| default (`${activeEditorShort}` first) | ❌ | the filename gets read as the workspace |
+
+Notes: the remote indicator (`[SSH: host]`, `[WSL: …]`, `[Dev Container: …]`) is part of `${rootName}`
+automatically in remote windows — nothing extra to add. `${appName}` (the trailing
+`- Visual Studio Code`) is optional; including it just keeps the active-file label tidy. A leading
+dirty-dot and its separator are stripped, so they don't interfere.
+
+**2. Keep your own title and adapt the parser.** If you'd rather not change `window.title`, the parser is
+small and pure and easy to adjust to your layout — the walkthrough in
+[docs/window-title-parsing.md](docs/window-title-parsing.md) lays it out step by step (it's written so
+any coding agent, including a free tier, can make the change and add a test).
+
 ## Build
 
 Requires the Rust toolchain (MSVC) on Windows.
