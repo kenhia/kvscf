@@ -58,6 +58,14 @@ pub fn close_window(hwnd_raw: i64) -> bool {
     unsafe { PostMessageW(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0)).is_ok() }
 }
 
+/// The current foreground window, if any — lets the rail mark which listed window is active.
+pub fn foreground_hwnd() -> Option<i64> {
+    unsafe {
+        let h = GetForegroundWindow();
+        (!h.0.is_null()).then_some(h.0 as i64)
+    }
+}
+
 /// The un-mitigated bare `SetForegroundWindow`, kept for characterization/testing only.
 /// Do not use as the real focus path — it does not un-minimize and is subject to the
 /// foreground lock. See sprint 001 focus test #1.
