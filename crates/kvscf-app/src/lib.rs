@@ -264,7 +264,7 @@ impl KvscfApp {
     fn add_favorite(&mut self, entry: winset::SetEntry) {
         if !self.favorites.iter().any(|f| f.same_target(&entry)) {
             self.favorites.push(entry);
-            let _ = winset::save_favorites(&self.favorites);
+            self.persist_favorites();
         }
     }
 
@@ -273,7 +273,17 @@ impl KvscfApp {
         let before = self.favorites.len();
         self.favorites.retain(|f| !f.same_target(entry));
         if self.favorites.len() != before {
-            let _ = winset::save_favorites(&self.favorites);
+            self.persist_favorites();
+        }
+    }
+
+    /// Write the favorites file, surfacing any failure — a swallowed error here cost the whole
+    /// favorites list once (2026-07-20: an early-boot instance without %APPDATA% "saved" into
+    /// the void for days). The status line lives in the Code tab's Controls drawer.
+    fn persist_favorites(&mut self) {
+        if let Err(e) = winset::save_favorites(&self.favorites) {
+            self.ua_status = format!("favorites save FAILED: {e}");
+            eprintln!("kvscf: favorites save failed: {e}");
         }
     }
 
@@ -397,159 +407,160 @@ impl KvscfApp {
 
     // --- UI pieces (decomposed from update(), WI #496) ---
 
-    /// Top chrome (WI #502): the `[ Code | Edge | Apps ]` tab strip (with live counts) and,
-    /// right-aligned, refresh + the ⚙ settings popup. Replaces the old three-checkbox header —
-    /// the counts already live in the tab labels, so the rail gets the vertical space back.
+    /// Top chrome: the `[ Code | Edge | Apps ]` strip drawn as real tabs — flat labels with a
+    /// per-tab accent underline on the selected one. No counts and no buttons up here
+    /// (everything else lives in the bottom Controls drawer), so the strip fits any docked
+    /// width. (WI #502 follow-up, Ken's feedback 2026-07-20.)
     fn ui_top(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
             ui.add_space(theme::dims::PANEL_PAD);
+            let p = theme::palette(ui.visuals().dark_mode);
+            let tabs = [
+                (Tab::Code, "Code", p.stable),
+                (Tab::Edge, "Edge", p.edge),
+                (Tab::Apps, "Apps", p.stable),
+            ];
             ui.horizontal(|ui| {
-                ui.spacing_mut().button_padding = egui::vec2(7.0, 3.0);
-                ui.selectable_value(
-                    &mut self.tab,
-                    Tab::Code,
-                    format!("Code ({})", self.items.len()),
-                );
-                ui.selectable_value(
-                    &mut self.tab,
-                    Tab::Edge,
-                    format!("Edge ({})", self.edge.len()),
-                );
-                ui.selectable_value(
-                    &mut self.tab,
-                    Tab::Apps,
-                    format!("Apps ({})", self.apps.len()),
-                );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    self.ui_settings_menu(ui, ctx);
-                    if ui.button("⟳").on_hover_text("Refresh now").clicked() {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                for (tab, label, accent) in tabs {
+                    if tab_button(ui, label, self.tab == tab, accent).clicked() {
+                        self.tab = tab;
+                    }
+                }
+            });
+        });
+    }
+
+    /// Bottom "Controls" drawer — collapsed by default so the rail height goes to the list,
+    /// and expandable at any width (docked included, where the old horizontal chrome clipped
+    /// off-screen). Everything that isn't a tab lives here, vertically: refresh, the three
+    /// mode toggles, and (Code tab) sets + Update Assist. Force-opens while an Update Assist
+    /// flow is mid-step so its buttons can't hide.
+    fn ui_controls(&mut self, ctx: &egui::Context) {
+        egui::TopBottomPanel::bottom("controls").show(ctx, |ui| {
+            ui.add_space(2.0);
+            let force_open = (self.ua_state != UaState::Idle).then_some(true);
+            egui::CollapsingHeader::new("Controls")
+                .open(force_open)
+                .default_open(false)
+                .show(ui, |ui| {
+                    if ui.button("⟳ Refresh now").clicked() {
                         self.refresh();
                     }
+                    ui.add_space(2.0);
+                    let mut changed = false;
+                    changed |= ui
+                        .checkbox(&mut self.maximize_on_focus, "Maximize on focus")
+                        .changed();
+                    if ui
+                        .checkbox(&mut self.docked, "Dock (primary left)")
+                        .changed()
+                    {
+                        changed = true;
+                        self.apply_mode(ctx);
+                    }
+                    ui.add_enabled_ui(!self.docked, |ui| {
+                        if ui
+                            .checkbox(&mut self.auto_hide, "Auto-hide")
+                            .on_hover_text("Self-minimize ~2s after focusing (floating mode only)")
+                            .changed()
+                        {
+                            changed = true;
+                        }
+                    });
+                    if changed {
+                        self.save_settings();
+                    }
+                    // Sets + Update Assist are VS-Code-specific — Code tab only.
+                    if self.tab == Tab::Code {
+                        ui.separator();
+                        self.ui_sets_section(ui);
+                    }
                 });
-            });
-            ui.add_space(theme::dims::PANEL_PAD);
+            ui.add_space(2.0);
         });
     }
 
-    /// The ⚙ settings popup — the mode toggles, out of the always-visible chrome (WI #502).
-    fn ui_settings_menu(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        ui.menu_button("⚙", |ui| {
-            let mut changed = false;
-            changed |= ui
-                .checkbox(&mut self.maximize_on_focus, "Maximize on focus")
-                .changed();
-            if ui
-                .checkbox(&mut self.docked, "Dock (primary left)")
-                .changed()
-            {
-                changed = true;
-                self.apply_mode(ctx);
-            }
-            ui.add_enabled_ui(!self.docked, |ui| {
+    /// Sets + the Update Assist flow, laid out vertically so every control is reachable at
+    /// any rail width.
+    fn ui_sets_section(&mut self, ui: &mut egui::Ui) {
+        match self.ua_state {
+            UaState::Idle => {
                 if ui
-                    .checkbox(&mut self.auto_hide, "Auto-hide")
-                    .on_hover_text("Self-minimize ~2s after focusing (floating mode only)")
-                    .changed()
+                    .button("Save set")
+                    .on_hover_text("Save the currently open windows as 'last'")
+                    .clicked()
                 {
-                    changed = true;
+                    let (resolved, _) = winset::resolve_open_set_now();
+                    let entries: Vec<_> = resolved.into_iter().map(|(_, e)| e).collect();
+                    let n = entries.len();
+                    self.ua_status = match winset::save_set("last", &entries) {
+                        Ok(()) => format!("saved {n}"),
+                        Err(e) => format!("save FAILED: {e}"),
+                    };
                 }
-            });
-            if changed {
-                self.save_settings();
-            }
-        })
-        .response
-        .on_hover_text("Settings");
-    }
-
-    /// Save/Restore + the Update Assist flow (bottom panel; VS-Code-specific, Code tab only).
-    fn ui_update_assist(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::bottom("update_assist").show(ctx, |ui| {
-            ui.add_space(theme::dims::PANEL_PAD);
-            match self.ua_state {
-                UaState::Idle => {
-                    ui.horizontal(|ui| {
-                        if ui
-                            .button("Save set")
-                            .on_hover_text("Save the currently open windows as 'last'")
-                            .clicked()
-                        {
-                            let (resolved, _) = winset::resolve_open_set_now();
-                            let entries: Vec<_> = resolved.into_iter().map(|(_, e)| e).collect();
-                            let n = entries.len();
-                            self.ua_status = match winset::save_set("last", &entries) {
-                                Ok(()) => format!("saved {n}"),
-                                Err(_) => "save failed".into(),
-                            };
+                if ui
+                    .button("Restore")
+                    .on_hover_text("Relaunch the saved 'last' set")
+                    .clicked()
+                {
+                    match winset::load_set("last") {
+                        Some(set) => {
+                            let n = set.len();
+                            winset::relaunch(set, Duration::from_millis(1500));
+                            self.ua_status = format!("relaunching {n}…");
                         }
-                        if ui
-                            .button("Restore")
-                            .on_hover_text("Relaunch the saved 'last' set")
-                            .clicked()
-                        {
-                            match winset::load_set("last") {
-                                Some(set) => {
-                                    let n = set.len();
-                                    winset::relaunch(set, Duration::from_millis(1500));
-                                    self.ua_status = format!("relaunching {n}…");
-                                }
-                                None => self.ua_status = "no saved set".into(),
-                            }
-                        }
-                        // Right-aligned in the same row (WI #502) — one compact button bar.
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui
-                                .button("Update…")
-                                .on_hover_text(
-                                    "Insiders update helper: close all but one window per \
-                                     host×build,\nyou run the update(s), then relaunch the rest.",
-                                )
-                                .clicked()
-                            {
-                                self.ua_status.clear();
-                                self.ua_state = UaState::ConfirmClose;
-                            }
-                        });
-                    });
-                    if !self.ua_status.is_empty() {
-                        ui.label(egui::RichText::new(&self.ua_status).small().weak());
+                        None => self.ua_status = "no saved set".into(),
                     }
                 }
-                UaState::ConfirmClose => {
-                    ui.label(
-                        egui::RichText::new("Keep one window per host × build, close the rest?")
-                            .small()
-                            .weak(),
-                    );
-                    ui.horizontal(|ui| {
-                        if ui.button("Close Extras").clicked() {
-                            self.ua_close_extras();
-                        }
-                        if ui.button("Cancel").clicked() {
-                            self.ua_cancel();
-                        }
-                    });
+                if ui
+                    .button("Update Assist")
+                    .on_hover_text(
+                        "Insiders update helper: close all but one window per host×build,\n\
+                         you run the update(s), then relaunch the rest.",
+                    )
+                    .clicked()
+                {
+                    self.ua_status.clear();
+                    self.ua_state = UaState::ConfirmClose;
                 }
-                UaState::ReadyRelaunch => {
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "Closed {}. Your turn — start the update(s), then click Relaunch.",
-                            self.ua_closed
-                        ))
-                        .small(),
-                    );
-                    ui.horizontal(|ui| {
-                        if ui.button("Relaunch").clicked() {
-                            self.ua_relaunch_now();
-                        }
-                        if ui.button("Cancel").clicked() {
-                            self.ua_cancel();
-                        }
-                    });
+                if !self.ua_status.is_empty() {
+                    ui.label(egui::RichText::new(&self.ua_status).small().weak());
                 }
             }
-            ui.add_space(theme::dims::PANEL_PAD);
-        });
+            UaState::ConfirmClose => {
+                ui.label(
+                    egui::RichText::new("Keep one window per host × build, close the rest?")
+                        .small()
+                        .weak(),
+                );
+                ui.horizontal(|ui| {
+                    if ui.button("Close Extras").clicked() {
+                        self.ua_close_extras();
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.ua_cancel();
+                    }
+                });
+            }
+            UaState::ReadyRelaunch => {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Closed {}. Your turn — start the update(s), then click Relaunch.",
+                        self.ua_closed
+                    ))
+                    .small(),
+                );
+                ui.horizontal(|ui| {
+                    if ui.button("Relaunch").clicked() {
+                        self.ua_relaunch_now();
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.ua_cancel();
+                    }
+                });
+            }
+        }
     }
 
     /// Code tab: running windows (click to focus, right-click to (un)favorite), then a dimmed
@@ -757,10 +768,7 @@ impl eframe::App for KvscfApp {
         }
 
         self.ui_top(ctx);
-        // Save/Restore + Update Assist are VS-Code-specific — Code tab only.
-        if self.tab == Tab::Code {
-            self.ui_update_assist(ctx);
-        }
+        self.ui_controls(ctx);
 
         let mut actions = Actions::default();
         egui::CentralPanel::default().show(ctx, |ui| match self.tab {
@@ -783,6 +791,49 @@ impl eframe::App for KvscfApp {
             }
         }
     }
+}
+
+/// A tab-shaped tab: flat label with a hover wash, and a rounded accent underline when
+/// selected — reads as a real tab strip rather than egui's filled selectable buttons.
+fn tab_button(
+    ui: &mut egui::Ui,
+    label: &str,
+    selected: bool,
+    accent: egui::Color32,
+) -> egui::Response {
+    use egui::{pos2, vec2, Color32, FontId, Rect, Sense};
+    let font = FontId::proportional(14.0);
+    let pad = vec2(9.0, 5.0);
+    let galley =
+        ui.fonts(|f| f.layout_no_wrap(label.to_string(), font.clone(), Color32::PLACEHOLDER));
+    // +3px height for the underline band below the label.
+    let (rect, resp) =
+        ui.allocate_exact_size(galley.size() + pad * 2.0 + vec2(0.0, 3.0), Sense::click());
+    if ui.is_rect_visible(rect) {
+        if resp.hovered() && !selected {
+            ui.painter()
+                .rect_filled(rect, 4.0, ui.visuals().widgets.hovered.weak_bg_fill);
+        }
+        let color = if selected {
+            ui.visuals().strong_text_color()
+        } else {
+            ui.visuals().weak_text_color()
+        };
+        let galley = ui.fonts(|f| f.layout_no_wrap(label.to_string(), font, color));
+        ui.painter().galley(
+            pos2(rect.center().x - galley.size().x / 2.0, rect.top() + pad.y),
+            galley,
+            Color32::PLACEHOLDER,
+        );
+        if selected {
+            let bar = Rect::from_min_max(
+                pos2(rect.left() + 4.0, rect.bottom() - 2.5),
+                pos2(rect.right() - 4.0, rect.bottom() - 0.5),
+            );
+            ui.painter().rect_filled(bar, 1.0, accent);
+        }
+    }
+    resp
 }
 
 /// Our native window handle (Win32 HWND as isize), if available.
