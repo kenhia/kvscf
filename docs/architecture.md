@@ -17,9 +17,15 @@ kvscf-local  binary  — no-comms build for kwork (remote off; excluded from def
 ```
 
 `kvscf` and `kvscf-local` are thin `fn main()` shells over `kvscf_app::run()`; the only difference is
-whether the `remote` feature (and its deps: `redis`, `serde_json`, `dotenvy`) are compiled in. Because a
-whole-workspace build unifies features, the comms-free artifact must be built **in isolation**:
-`cargo build --release -p kvscf-local` (CI asserts `--build-info` → `remote=false`). See WI #471.
+whether the `remote` feature (and its deps: `redis`, `dotenvy`) are compiled in (`serde_json` is used
+in both builds for window-set resolution). Because a whole-workspace build unifies features, the
+comms-free artifact must be built **in isolation**: `cargo build --release -p kvscf-local` (CI asserts
+`--build-info` → `remote=false`). See WI #471.
+
+`kvscf-app` is organized as focused modules (sprint 013, WI #496): `rows` (the one row painter),
+`theme` (color/spacing tokens), `fonts`, `settings`, `probes` (headless verification flags),
+`apps` / `winset` / `dock` (domain), `single_instance` / `userreg` (Windows plumbing), and the
+feature-gated `remote`.
 
 ## Core mechanics (`kvscf-core`)
 
@@ -44,6 +50,11 @@ Two window modes:
 - **Docked** (WI #468) — a Windows **AppBar** reserving the primary monitor's left edge, so maximized
   windows don't cover it (like the taskbar). Borderless + always-on-top; `SHAppBarMessage`
   ABM_NEW/QUERYPOS/SETPOS, re-asserted ~1s, removed on exit.
+
+Chrome (sprint 015): a `[ Code | Edge | Apps ]` tab strip (flat labels, accent underline on the
+selected tab), and a bottom **Controls drawer** — collapsed by default, vertical when expanded — holding
+refresh, the mode toggles, and the Code tab's sets/Update Assist controls, so everything stays reachable
+at any docked width. The row whose window currently holds the foreground gets a thin accent bar.
 
 Settings (`maximize_on_focus`, `auto_hide`, `docked`) persist to `HKCU\Software\kenhia\kvscf`; a named
 mutex enforces a single instance.
@@ -88,7 +99,8 @@ on cleo, so no krcmd round-trip).
 
 - **Save / Restore** (WI #469): persist the resolved set as `%APPDATA%\kvscf\sets\last.json`; Restore
   relaunches it (staggered).
-- **Update Assist** (WI #470): a bottom-panel flow for the near-daily Insiders remote-update dance —
+- **Update Assist** (WI #470): a flow in the bottom Controls drawer for the near-daily Insiders
+  remote-update dance —
   **Close Extras** keeps one window per (remote host × build) and closes the rest
   (`kvscf-core::close_window` = `WM_CLOSE`; locals untouched, survivor = most-recently-active); you run
   the update(s); **Relaunch** reopens the closed set, staggered.
