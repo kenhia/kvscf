@@ -45,7 +45,12 @@ struct KnownUri {
 }
 
 fn appdata() -> Option<PathBuf> {
-    std::env::var_os("APPDATA").map(PathBuf::from)
+    // %APPDATA% can be absent for a process launched very early in boot (the same window as
+    // userreg's .DEFAULT bug); fall back to the standard path under %USERPROFILE% so saves
+    // land in the same place a normal launch reads from.
+    std::env::var_os("APPDATA").map(PathBuf::from).or_else(|| {
+        std::env::var_os("USERPROFILE").map(|p| PathBuf::from(p).join("AppData").join("Roaming"))
+    })
 }
 
 /// `%APPDATA%` subdir name for a build.
