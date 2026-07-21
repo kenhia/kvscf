@@ -22,7 +22,7 @@ pub use enumerate::{
     find_app_window, list_windows, resolve_apps, scan, scan_all, scan_edge, WindowInfo,
 };
 #[cfg(windows)]
-pub use focus::{close_window, focus, focus_unmitigated, focus_with};
+pub use focus::{close_window, focus, focus_unmitigated, focus_with, foreground_hwnd};
 
 // Portable no-op stubs so the crate (and the parse tests) build on non-Windows hosts.
 #[cfg(not(windows))]
@@ -69,6 +69,9 @@ mod stubs {
     }
     pub fn focus_unmitigated(_hwnd: i64) -> bool {
         false
+    }
+    pub fn foreground_hwnd() -> Option<i64> {
+        None
     }
 }
 #[cfg(not(windows))]

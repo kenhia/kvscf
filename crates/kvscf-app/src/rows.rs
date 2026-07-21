@@ -1,7 +1,7 @@
 //! The one row painter behind every list row (WI #493). All four row kinds (Code window,
 //! dimmed favorite, Edge window, configured app) are thin specs over [`draw`]: an optional
 //! marker in a reserved left gutter, a truncating main text, and an optional never-truncated
-//! trailing text (the remote host).
+//! trailing text (the remote host). Colors and dimensions come from [`crate::theme`].
 
 use eframe::egui::{self, Color32, FontId, Sense, TextFormat};
 use egui::text::LayoutJob;
@@ -9,17 +9,9 @@ use egui::text::LayoutJob;
 use kvscf_core::{EdgeWindow, Instance, Remote};
 
 use crate::apps::AppEntry;
+use crate::fonts;
+use crate::theme::{self, dims};
 use crate::winset::SetEntry;
-use crate::{fonts, theme};
-
-/// Horizontal padding inside a row.
-pub const PAD: f32 = 8.0;
-/// Minimum row height.
-pub const MIN_ROW_H: f32 = 24.0;
-/// Left gutter reserved for the marker (★ ● ○) so marked and unmarked siblings stay aligned.
-pub const GUTTER: f32 = 15.0;
-/// Marker glyph size.
-const MARKER_SIZE: f32 = 11.0;
 
 /// One row's ingredients. `text` truncates with `…`; `trail` never truncates.
 pub struct RowSpec<'a> {
@@ -32,12 +24,14 @@ pub struct RowSpec<'a> {
     pub color: Color32,
     /// Trailing italic text (the remote host), kept in full at the main text's expense.
     pub trail: Option<(String, FontId, Color32)>,
+    /// This row's window is the current foreground window — paint a thin accent bar (WI #502).
+    pub active: bool,
 }
 
 /// Draw one left-aligned, full-width clickable row from a [`RowSpec`].
 pub fn draw(ui: &mut egui::Ui, spec: RowSpec<'_>) -> egui::Response {
     let width = ui.available_width();
-    let gutter = if spec.gutter { GUTTER } else { 0.0 };
+    let gutter = if spec.gutter { dims::GUTTER } else { 0.0 };
 
     // Trailing galley first (never truncated), so we know how much room the main text gets.
     let trail_galley = spec.trail.map(|(text, font_id, color)| {
@@ -68,7 +62,7 @@ pub fn draw(ui: &mut egui::Ui, spec: RowSpec<'_>) -> egui::Response {
                 ..Default::default()
             },
         );
-        job.wrap.max_width = (width - PAD * 2.0 - gutter - trail_w).max(24.0);
+        job.wrap.max_width = (width - dims::ROW_PAD * 2.0 - gutter - trail_w).max(24.0);
         job.wrap.max_rows = 1;
         job.wrap.break_anywhere = false;
         job.wrap.overflow_character = Some('…');
@@ -78,7 +72,7 @@ pub fn draw(ui: &mut egui::Ui, spec: RowSpec<'_>) -> egui::Response {
     let main_w = main_galley.size().x;
     let main_h = main_galley.size().y;
     let trail_h = trail_galley.as_ref().map(|g| g.size().y).unwrap_or(0.0);
-    let row_h = (main_h.max(trail_h) + 8.0).max(MIN_ROW_H);
+    let row_h = (main_h.max(trail_h) + 8.0).max(dims::ROW_MIN_H);
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, row_h), Sense::click());
 
     if ui.is_rect_visible(rect) {
@@ -86,17 +80,33 @@ pub fn draw(ui: &mut egui::Ui, spec: RowSpec<'_>) -> egui::Response {
             ui.painter()
                 .rect_filled(rect, 4.0, ui.visuals().widgets.hovered.weak_bg_fill);
         }
+        // Active-window indicator: a thin accent bar hugging the row's left edge.
+        if spec.active {
+            let bar = egui::Rect::from_min_max(
+                egui::pos2(rect.left(), rect.top() + 3.0),
+                egui::pos2(rect.left() + dims::ACTIVE_BAR_W, rect.bottom() - 3.0),
+            );
+            ui.painter()
+                .rect_filled(bar, dims::ACTIVE_BAR_W / 2.0, spec.color);
+        }
         if let Some((glyph, color)) = spec.marker {
             let g = ui.fonts(|f| {
-                f.layout_no_wrap(glyph.to_string(), FontId::proportional(MARKER_SIZE), color)
+                f.layout_no_wrap(
+                    glyph.to_string(),
+                    FontId::proportional(dims::MARKER_SIZE),
+                    color,
+                )
             });
             ui.painter().galley(
-                egui::pos2(rect.left() + PAD, rect.center().y - g.size().y / 2.0),
+                egui::pos2(
+                    rect.left() + dims::ROW_PAD,
+                    rect.center().y - g.size().y / 2.0,
+                ),
                 g,
                 Color32::PLACEHOLDER,
             );
         }
-        let x = rect.left() + PAD + gutter;
+        let x = rect.left() + dims::ROW_PAD + gutter;
         ui.painter().galley(
             egui::pos2(x, rect.center().y - main_h / 2.0),
             main_galley,
@@ -119,23 +129,22 @@ pub fn code_row(
     item: &Instance,
     name_font: &FontId,
     favorited: bool,
+    active: bool,
 ) -> egui::Response {
-    let dark = ui.visuals().dark_mode;
+    let p = theme::palette(ui.visuals().dark_mode);
     let resp = draw(
         ui,
         RowSpec {
             gutter: true,
-            marker: favorited.then(|| ("★", theme::fav_star_color(dark))),
+            marker: favorited.then_some(("★", p.fav_star)),
             text: &item.workspace,
             font: name_font.clone(),
-            color: theme::app_color(item.app, dark),
-            trail: item.remote.host().map(|h| {
-                (
-                    format!("  {h}"),
-                    fonts::host_font(),
-                    theme::host_color(dark),
-                )
-            }),
+            color: p.app(item.app),
+            trail: item
+                .remote
+                .host()
+                .map(|h| (format!("  {h}"), fonts::host_font(), p.host)),
+            active,
         },
     );
     let mut tip = hover_text(item);
@@ -147,8 +156,8 @@ pub fn code_row(
 
 /// A favorite that isn't open: ○ marker + muted build-tinted label; click relaunches.
 pub fn fav_row(ui: &mut egui::Ui, fav: &SetEntry, name_font: &FontId) -> egui::Response {
-    let dark = ui.visuals().dark_mode;
-    let color = theme::fav_dim_color(fav.app, dark);
+    let p = theme::palette(ui.visuals().dark_mode);
+    let color = p.dimmed(p.app(fav.app));
     draw(
         ui,
         RowSpec {
@@ -158,18 +167,24 @@ pub fn fav_row(ui: &mut egui::Ui, fav: &SetEntry, name_font: &FontId) -> egui::R
             font: name_font.clone(),
             color,
             trail: None,
+            active: false,
         },
     )
     .on_hover_text(format!("{}\nnot open — click to relaunch", fav.label))
 }
 
 /// An Edge window: named windows in the Edge-teal accent, unnamed (tab-derived) muted.
-pub fn edge_row(ui: &mut egui::Ui, w: &EdgeWindow, name_font: &FontId) -> egui::Response {
-    let dark = ui.visuals().dark_mode;
+pub fn edge_row(
+    ui: &mut egui::Ui,
+    w: &EdgeWindow,
+    name_font: &FontId,
+    active: bool,
+) -> egui::Response {
+    let p = theme::palette(ui.visuals().dark_mode);
     let (color, font) = if w.named {
-        (theme::edge_named_color(dark), name_font.clone())
+        (p.edge, name_font.clone())
     } else {
-        (theme::edge_unnamed_color(dark), FontId::proportional(13.5))
+        (p.edge_unnamed, FontId::proportional(13.5))
     };
     let resp = draw(
         ui,
@@ -180,6 +195,7 @@ pub fn edge_row(ui: &mut egui::Ui, w: &EdgeWindow, name_font: &FontId) -> egui::
             font,
             color,
             trail: None,
+            active,
         },
     );
     match w.tab_count.filter(|&n| n > 1) {
@@ -190,13 +206,14 @@ pub fn edge_row(ui: &mut egui::Ui, w: &EdgeWindow, name_font: &FontId) -> egui::
 
 /// A configured app: running → full color + ● (click focuses); not running → dimmed + ○
 /// (click launches).
-pub fn app_row(ui: &mut egui::Ui, entry: &AppEntry, name_font: &FontId) -> egui::Response {
-    let dark = ui.visuals().dark_mode;
-    let color = if entry.running {
-        theme::app_running_color(dark)
-    } else {
-        theme::app_dim_color(dark)
-    };
+pub fn app_row(
+    ui: &mut egui::Ui,
+    entry: &AppEntry,
+    name_font: &FontId,
+    active: bool,
+) -> egui::Response {
+    let p = theme::palette(ui.visuals().dark_mode);
+    let color = if entry.running { p.stable } else { p.dim };
     let dot = if entry.running { "●" } else { "○" };
     let hint = if entry.running {
         "running — click to focus"
@@ -212,6 +229,7 @@ pub fn app_row(ui: &mut egui::Ui, entry: &AppEntry, name_font: &FontId) -> egui:
             font: name_font.clone(),
             color,
             trail: None,
+            active,
         },
     )
     .on_hover_text(format!("{} ({})\n{hint}", entry.label, entry.key))

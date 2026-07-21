@@ -397,11 +397,14 @@ impl KvscfApp {
 
     // --- UI pieces (decomposed from update(), WI #496) ---
 
-    /// The `[ Code | Edge | Apps ]` tab strip.
-    fn ui_tabs(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::top("tabs").show(ctx, |ui| {
-            ui.add_space(3.0);
+    /// Top chrome (WI #502): the `[ Code | Edge | Apps ]` tab strip (with live counts) and,
+    /// right-aligned, refresh + the ⚙ settings popup. Replaces the old three-checkbox header —
+    /// the counts already live in the tab labels, so the rail gets the vertical space back.
+    fn ui_top(&mut self, ctx: &egui::Context) {
+        egui::TopBottomPanel::top("top").show(ctx, |ui| {
+            ui.add_space(theme::dims::PANEL_PAD);
             ui.horizontal(|ui| {
+                ui.spacing_mut().button_padding = egui::vec2(7.0, 3.0);
                 ui.selectable_value(
                     &mut self.tab,
                     Tab::Code,
@@ -417,64 +420,52 @@ impl KvscfApp {
                     Tab::Apps,
                     format!("Apps ({})", self.apps.len()),
                 );
-            });
-            ui.add_space(2.0);
-        });
-    }
-
-    /// Settings checkboxes + count + manual refresh.
-    fn ui_header(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::top("header").show(ctx, |ui| {
-            ui.add_space(3.0);
-            let mut changed = false;
-            changed |= ui
-                .checkbox(&mut self.maximize_on_focus, "Maximize on focus")
-                .changed();
-            ui.horizontal(|ui| {
-                let dock_resp = ui.checkbox(&mut self.docked, "Dock (primary left)");
-                if dock_resp.changed() {
-                    changed = true;
-                    self.apply_mode(ctx);
-                }
-                ui.add_enabled_ui(!self.docked, |ui| {
-                    if ui
-                        .checkbox(&mut self.auto_hide, "Auto-hide")
-                        .on_hover_text("Self-minimize ~2s after focusing (floating mode only)")
-                        .changed()
-                    {
-                        changed = true;
-                    }
-                });
-            });
-            ui.horizontal(|ui| {
-                let n = match self.tab {
-                    Tab::Code => self.items.len(),
-                    Tab::Edge => self.edge.len(),
-                    Tab::Apps => self.apps.len(),
-                };
-                let noun = if self.tab == Tab::Apps {
-                    "app"
-                } else {
-                    "window"
-                };
-                ui.label(egui::RichText::new(format!("{n} {noun}(s)")).weak());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    self.ui_settings_menu(ui, ctx);
                     if ui.button("⟳").on_hover_text("Refresh now").clicked() {
                         self.refresh();
                     }
                 });
             });
+            ui.add_space(theme::dims::PANEL_PAD);
+        });
+    }
+
+    /// The ⚙ settings popup — the mode toggles, out of the always-visible chrome (WI #502).
+    fn ui_settings_menu(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        ui.menu_button("⚙", |ui| {
+            let mut changed = false;
+            changed |= ui
+                .checkbox(&mut self.maximize_on_focus, "Maximize on focus")
+                .changed();
+            if ui
+                .checkbox(&mut self.docked, "Dock (primary left)")
+                .changed()
+            {
+                changed = true;
+                self.apply_mode(ctx);
+            }
+            ui.add_enabled_ui(!self.docked, |ui| {
+                if ui
+                    .checkbox(&mut self.auto_hide, "Auto-hide")
+                    .on_hover_text("Self-minimize ~2s after focusing (floating mode only)")
+                    .changed()
+                {
+                    changed = true;
+                }
+            });
             if changed {
                 self.save_settings();
             }
-            ui.add_space(3.0);
-        });
+        })
+        .response
+        .on_hover_text("Settings");
     }
 
     /// Save/Restore + the Update Assist flow (bottom panel; VS-Code-specific, Code tab only).
     fn ui_update_assist(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::bottom("update_assist").show(ctx, |ui| {
-            ui.add_space(4.0);
+            ui.add_space(theme::dims::PANEL_PAD);
             match self.ua_state {
                 UaState::Idle => {
                     ui.horizontal(|ui| {
@@ -505,20 +496,23 @@ impl KvscfApp {
                                 None => self.ua_status = "no saved set".into(),
                             }
                         }
+                        // Right-aligned in the same row (WI #502) — one compact button bar.
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui
+                                .button("Update…")
+                                .on_hover_text(
+                                    "Insiders update helper: close all but one window per \
+                                     host×build,\nyou run the update(s), then relaunch the rest.",
+                                )
+                                .clicked()
+                            {
+                                self.ua_status.clear();
+                                self.ua_state = UaState::ConfirmClose;
+                            }
+                        });
                     });
                     if !self.ua_status.is_empty() {
                         ui.label(egui::RichText::new(&self.ua_status).small().weak());
-                    }
-                    if ui
-                        .button("Update Assist")
-                        .on_hover_text(
-                            "Insiders update helper: close all but one window per host×build,\n\
-                             you run the update(s), then relaunch the rest.",
-                        )
-                        .clicked()
-                    {
-                        self.ua_status.clear();
-                        self.ua_state = UaState::ConfirmClose;
                     }
                 }
                 UaState::ConfirmClose => {
@@ -554,7 +548,7 @@ impl KvscfApp {
                     });
                 }
             }
-            ui.add_space(4.0);
+            ui.add_space(theme::dims::PANEL_PAD);
         });
     }
 
@@ -568,10 +562,11 @@ impl KvscfApp {
             return;
         }
         let name_font = fonts::name_font(self.has_bold);
+        let fg = kvscf_core::foreground_hwnd();
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = 1.0;
+                ui.spacing_mut().item_spacing.y = theme::dims::ROW_GAP;
                 // Running windows — click to focus; right-click to (un)favorite.
                 for item in &self.items {
                     let hwnd = item.hwnd;
@@ -580,7 +575,7 @@ impl KvscfApp {
                         .as_ref()
                         .map(|e| self.favorites.iter().any(|f| f.same_target(e)))
                         .unwrap_or(false);
-                    let resp = rows::code_row(ui, item, &name_font, favorited);
+                    let resp = rows::code_row(ui, item, &name_font, favorited, fg == Some(hwnd));
                     if resp.clicked() {
                         actions.focus = Some(hwnd);
                     }
@@ -610,9 +605,9 @@ impl KvscfApp {
                 // Favorites that aren't open — dimmed; click relaunches.
                 if !dimmed.is_empty() {
                     if !self.items.is_empty() {
-                        ui.add_space(4.0);
+                        ui.add_space(theme::dims::SECTION_GAP);
                         ui.separator();
-                        ui.add_space(2.0);
+                        ui.add_space(theme::dims::SECTION_GAP / 2.0);
                     }
                     for fav in &dimmed {
                         let resp = rows::fav_row(ui, fav, &name_font);
@@ -638,24 +633,25 @@ impl KvscfApp {
             return;
         }
         let name_font = fonts::name_font(self.has_bold);
+        let fg = kvscf_core::foreground_hwnd();
         let has_named = self.edge.iter().any(|w| w.named);
         let has_unnamed = self.edge.iter().any(|w| !w.named);
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = 1.0;
+                ui.spacing_mut().item_spacing.y = theme::dims::ROW_GAP;
                 for w in self.edge.iter().filter(|w| w.named) {
-                    if rows::edge_row(ui, w, &name_font).clicked() {
+                    if rows::edge_row(ui, w, &name_font, fg == Some(w.hwnd)).clicked() {
                         actions.focus = Some(w.hwnd);
                     }
                 }
                 if has_named && has_unnamed {
-                    ui.add_space(4.0);
+                    ui.add_space(theme::dims::SECTION_GAP);
                     ui.separator();
-                    ui.add_space(2.0);
+                    ui.add_space(theme::dims::SECTION_GAP / 2.0);
                 }
                 for w in self.edge.iter().filter(|w| !w.named) {
-                    if rows::edge_row(ui, w, &name_font).clicked() {
+                    if rows::edge_row(ui, w, &name_font, fg == Some(w.hwnd)).clicked() {
                         actions.focus = Some(w.hwnd);
                     }
                 }
@@ -679,12 +675,14 @@ impl KvscfApp {
             return;
         }
         let name_font = fonts::name_font(self.has_bold);
+        let fg = kvscf_core::foreground_hwnd();
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = 1.0;
+                ui.spacing_mut().item_spacing.y = theme::dims::ROW_GAP;
                 for entry in &self.apps {
-                    if rows::app_row(ui, entry, &name_font).clicked() {
+                    let active = entry.hwnd.is_some() && entry.hwnd == fg;
+                    if rows::app_row(ui, entry, &name_font, active).clicked() {
                         match entry.hwnd {
                             // Running → focus it (like Code/Edge).
                             Some(hwnd) => actions.focus = Some(hwnd),
@@ -758,8 +756,7 @@ impl eframe::App for KvscfApp {
             self.refresh();
         }
 
-        self.ui_tabs(ctx);
-        self.ui_header(ctx);
+        self.ui_top(ctx);
         // Save/Restore + Update Assist are VS-Code-specific — Code tab only.
         if self.tab == Tab::Code {
             self.ui_update_assist(ctx);

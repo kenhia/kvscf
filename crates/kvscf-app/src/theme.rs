@@ -1,79 +1,104 @@
-//! Colors for the rail, per dark/light mode. Moved here from lib.rs (WI #496); sprint 014
-//! restructures these into a palette of named tokens (WI #501).
+//! Design tokens (WI #501): one named-color palette per dark/light mode, plus the shared
+//! dimension constants. Everything the painters color or measure with lives here, so a design
+//! change is a one-file edit.
 
 use eframe::egui::Color32;
 
 use kvscf_core::App;
 
-/// Accent color per VS Code build — applied to the workspace name.
-pub fn app_color(app: App, dark: bool) -> Color32 {
-    match app {
-        App::Insiders => Color32::from_rgb(56, 190, 132), // green
-        App::Exploration => Color32::from_rgb(210, 130, 50),
-        _ if dark => Color32::from_rgb(96, 165, 235), // Stable — blue
-        _ => Color32::from_rgb(24, 108, 198),
-    }
+/// Named colors for the rail, resolved for dark or light via [`palette`].
+pub struct Palette {
+    /// VS Code Insiders accent (green).
+    pub insiders: Color32,
+    /// VS Code Exploration accent (orange).
+    pub exploration: Color32,
+    /// VS Code Stable accent (blue) — also the running-app color on the Apps tab.
+    pub stable: Color32,
+    /// Edge named-window accent (teal).
+    pub edge: Color32,
+    /// Unnamed (tab-title-derived) Edge windows.
+    pub edge_unnamed: Color32,
+    /// Muted italic host suffix.
+    pub host: Color32,
+    /// Favorite ★ gold.
+    pub fav_star: Color32,
+    /// Not-running (launchable) app rows — plain gray, per the dashboard convention.
+    pub dim: Color32,
+    /// Gray level that [`Palette::dimmed`] blends accents toward.
+    dim_blend: u16,
 }
 
-pub fn host_color(dark: bool) -> Color32 {
+const DARK: Palette = Palette {
+    insiders: Color32::from_rgb(56, 190, 132),
+    exploration: Color32::from_rgb(210, 130, 50),
+    stable: Color32::from_rgb(96, 165, 235),
+    edge: Color32::from_rgb(72, 194, 205),
+    edge_unnamed: Color32::from_gray(190),
+    host: Color32::from_gray(150),
+    fav_star: Color32::from_rgb(230, 185, 70),
+    dim: Color32::from_gray(120),
+    dim_blend: 90,
+};
+
+const LIGHT: Palette = Palette {
+    insiders: Color32::from_rgb(56, 190, 132),
+    exploration: Color32::from_rgb(210, 130, 50),
+    stable: Color32::from_rgb(24, 108, 198),
+    edge: Color32::from_rgb(20, 120, 130),
+    edge_unnamed: Color32::from_gray(70),
+    host: Color32::from_gray(110),
+    fav_star: Color32::from_rgb(185, 140, 20),
+    dim: Color32::from_gray(150),
+    dim_blend: 165,
+};
+
+/// The palette for the current mode.
+pub fn palette(dark: bool) -> &'static Palette {
     if dark {
-        Color32::from_gray(150)
+        &DARK
     } else {
-        Color32::from_gray(110)
+        &LIGHT
     }
 }
 
-/// Gold accent for the favorite ★.
-pub fn fav_star_color(dark: bool) -> Color32 {
-    if dark {
-        Color32::from_rgb(230, 185, 70)
-    } else {
-        Color32::from_rgb(185, 140, 20)
+impl Palette {
+    /// Accent color per VS Code build — applied to the workspace name.
+    pub fn app(&self, app: App) -> Color32 {
+        match app {
+            App::Insiders => self.insiders,
+            App::Exploration => self.exploration,
+            _ => self.stable,
+        }
+    }
+
+    /// An accent blended halfway to gray — dimmed but still tinted, so a not-open Insiders
+    /// favorite reads greenish and a Stable one bluish.
+    pub fn dimmed(&self, base: Color32) -> Color32 {
+        let g = self.dim_blend;
+        Color32::from_rgb(
+            ((base.r() as u16 + g) / 2) as u8,
+            ((base.g() as u16 + g) / 2) as u8,
+            ((base.b() as u16 + g) / 2) as u8,
+        )
     }
 }
 
-/// A muted, build-tinted color for a not-open favorite — the build accent blended halfway to gray,
-/// so Insiders favorites still read greenish and Stable bluish while clearly dimmed.
-pub fn fav_dim_color(app: App, dark: bool) -> Color32 {
-    let base = app_color(app, dark);
-    let g: u16 = if dark { 90 } else { 165 };
-    Color32::from_rgb(
-        ((base.r() as u16 + g) / 2) as u8,
-        ((base.g() as u16 + g) / 2) as u8,
-        ((base.b() as u16 + g) / 2) as u8,
-    )
-}
-
-/// Full-strength color for a running app (blue, matching Code's stable accent).
-pub fn app_running_color(dark: bool) -> Color32 {
-    if dark {
-        Color32::from_rgb(96, 165, 235)
-    } else {
-        Color32::from_rgb(24, 108, 198)
-    }
-}
-
-/// Muted color for a not-running (launchable) app — greyed out, per the dashboard convention.
-pub fn app_dim_color(dark: bool) -> Color32 {
-    if dark {
-        Color32::from_gray(120)
-    } else {
-        Color32::from_gray(150)
-    }
-}
-
-pub fn edge_named_color(dark: bool) -> Color32 {
-    if dark {
-        Color32::from_rgb(72, 194, 205) // Edge teal
-    } else {
-        Color32::from_rgb(20, 120, 130)
-    }
-}
-
-pub fn edge_unnamed_color(dark: bool) -> Color32 {
-    if dark {
-        Color32::from_gray(190)
-    } else {
-        Color32::from_gray(70)
-    }
+/// Shared dimensions — the spacing scale the chrome and rows draw from.
+pub mod dims {
+    /// Horizontal padding inside a row.
+    pub const ROW_PAD: f32 = 8.0;
+    /// Minimum row height.
+    pub const ROW_MIN_H: f32 = 24.0;
+    /// Left gutter reserved for the marker (★ ● ○) so marked and unmarked siblings align.
+    pub const GUTTER: f32 = 15.0;
+    /// Marker glyph size.
+    pub const MARKER_SIZE: f32 = 11.0;
+    /// Vertical gap between rows.
+    pub const ROW_GAP: f32 = 1.0;
+    /// Breathing room at panel edges.
+    pub const PANEL_PAD: f32 = 4.0;
+    /// Gap around a section separator (running ↔ dimmed, named ↔ unnamed).
+    pub const SECTION_GAP: f32 = 4.0;
+    /// Width of the active-window accent bar at a row's left edge.
+    pub const ACTIVE_BAR_W: f32 = 2.5;
 }
