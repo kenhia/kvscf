@@ -8,7 +8,9 @@
 //!   kvscf-core find [proc=X] [class=Y] [title=Z]   # verify a matcher resolves to a window
 //!   kvscf-core focus <hwnd>
 
-use kvscf_core::{find_app_window, focus, list_windows, scan, scan_edge, AppMatcher};
+use kvscf_core::{
+    find_app_window, focus, list_windows, scan, scan_edge, sort_edge_windows, AppMatcher,
+};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -77,11 +79,7 @@ fn cmd_find(args: &[String]) {
 fn cmd_edge() {
     let mut wins = scan_edge();
     // Named first (by name), then unnamed (by label) — the target UX.
-    wins.sort_by(|a, b| {
-        b.named
-            .cmp(&a.named)
-            .then_with(|| a.label.to_lowercase().cmp(&b.label.to_lowercase()))
-    });
+    sort_edge_windows(&mut wins);
     if wins.is_empty() {
         println!("(no Edge windows open)");
         return;

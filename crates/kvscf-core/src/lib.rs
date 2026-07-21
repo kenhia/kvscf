@@ -24,60 +24,55 @@ pub use enumerate::{
 #[cfg(windows)]
 pub use focus::{close_window, focus, focus_unmitigated, focus_with};
 
-// Portable stubs so the crate (and the parse tests) build on non-Windows hosts.
+// Portable no-op stubs so the crate (and the parse tests) build on non-Windows hosts.
 #[cfg(not(windows))]
-pub fn scan() -> Vec<Instance> {
-    Vec::new()
+mod stubs {
+    use super::{AppMatcher, EdgeWindow, Instance, LaunchSpec};
+
+    pub struct WindowInfo {
+        pub hwnd: i64,
+        pub image: String,
+        pub class: String,
+        pub title: String,
+    }
+
+    pub fn scan() -> Vec<Instance> {
+        Vec::new()
+    }
+    pub fn scan_edge() -> Vec<EdgeWindow> {
+        Vec::new()
+    }
+    pub fn scan_all() -> (Vec<Instance>, Vec<EdgeWindow>) {
+        (Vec::new(), Vec::new())
+    }
+    pub fn find_app_window(_m: &AppMatcher) -> Option<i64> {
+        None
+    }
+    pub fn resolve_apps(matchers: &[AppMatcher]) -> Vec<Option<i64>> {
+        matchers.iter().map(|_| None).collect()
+    }
+    pub fn list_windows() -> Vec<WindowInfo> {
+        Vec::new()
+    }
+    pub fn launch_app(_s: &LaunchSpec) -> std::io::Result<()> {
+        Ok(())
+    }
+    pub fn launch_and_focus(_s: &LaunchSpec, _m: &AppMatcher) {}
+    pub fn focus(_hwnd: i64) -> bool {
+        false
+    }
+    pub fn focus_with(_hwnd: i64, _maximize: bool) -> bool {
+        false
+    }
+    pub fn close_window(_hwnd: i64) -> bool {
+        false
+    }
+    pub fn focus_unmitigated(_hwnd: i64) -> bool {
+        false
+    }
 }
 #[cfg(not(windows))]
-pub fn scan_edge() -> Vec<EdgeWindow> {
-    Vec::new()
-}
-#[cfg(not(windows))]
-pub fn scan_all() -> (Vec<Instance>, Vec<EdgeWindow>) {
-    (Vec::new(), Vec::new())
-}
-#[cfg(not(windows))]
-pub fn find_app_window(_m: &AppMatcher) -> Option<i64> {
-    None
-}
-#[cfg(not(windows))]
-pub fn resolve_apps(matchers: &[AppMatcher]) -> Vec<Option<i64>> {
-    matchers.iter().map(|_| None).collect()
-}
-#[cfg(not(windows))]
-pub struct WindowInfo {
-    pub hwnd: i64,
-    pub image: String,
-    pub class: String,
-    pub title: String,
-}
-#[cfg(not(windows))]
-pub fn list_windows() -> Vec<WindowInfo> {
-    Vec::new()
-}
-#[cfg(not(windows))]
-pub fn launch_app(_s: &LaunchSpec) -> std::io::Result<()> {
-    Ok(())
-}
-#[cfg(not(windows))]
-pub fn launch_and_focus(_s: &LaunchSpec, _m: &AppMatcher) {}
-#[cfg(not(windows))]
-pub fn focus(_hwnd: i64) -> bool {
-    false
-}
-#[cfg(not(windows))]
-pub fn focus_with(_hwnd: i64, _maximize: bool) -> bool {
-    false
-}
-#[cfg(not(windows))]
-pub fn close_window(_hwnd: i64) -> bool {
-    false
-}
-#[cfg(not(windows))]
-pub fn focus_unmitigated(_hwnd: i64) -> bool {
-    false
-}
+pub use stubs::*;
 
 /// Which VS Code build a window belongs to. Determined from the process image name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -111,6 +106,26 @@ impl App {
             App::Unknown => "?",
         }
     }
+
+    /// Stable lowercase key — used in persisted set/favorite JSON and the published wire payloads.
+    pub fn key(&self) -> &'static str {
+        match self {
+            App::Stable => "stable",
+            App::Insiders => "insiders",
+            App::Exploration => "exploration",
+            App::Unknown => "unknown",
+        }
+    }
+
+    /// Inverse of [`App::key`]. Unrecognized (or legacy `"unknown"`) keys read as `Stable`,
+    /// which launches with plain `code` — the tolerant choice for persisted data.
+    pub fn from_key(k: &str) -> App {
+        match k {
+            "insiders" => App::Insiders,
+            "exploration" => App::Exploration,
+            _ => App::Stable,
+        }
+    }
 }
 
 /// Where a window's workspace lives — local, or a remote of some kind.
@@ -124,6 +139,17 @@ pub enum Remote {
 }
 
 impl Remote {
+    /// Stable lowercase kind string for wire payloads (`"local"`, `"ssh"`, …).
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Remote::Local => "local",
+            Remote::Ssh(_) => "ssh",
+            Remote::Wsl(_) => "wsl",
+            Remote::DevContainer(_) => "devcontainer",
+            Remote::Codespaces(_) => "codespaces",
+        }
+    }
+
     /// The host/distro/container name, if remote.
     pub fn host(&self) -> Option<&str> {
         match self {
@@ -171,6 +197,15 @@ pub struct EdgeWindow {
     pub named: bool,
     pub tab_count: Option<u32>,
     pub z_index: usize,
+}
+
+/// Display order for Edge windows: named windows first, then alphabetical by label (both groups).
+pub fn sort_edge_windows(windows: &mut [EdgeWindow]) {
+    windows.sort_by(|a, b| {
+        b.named
+            .cmp(&a.named)
+            .then_with(|| a.label.to_lowercase().cmp(&b.label.to_lowercase()))
+    });
 }
 
 /// How to recognize a configured app's window (Apps tab, sprint 007). A window matches when every

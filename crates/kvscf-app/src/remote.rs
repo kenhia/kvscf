@@ -18,13 +18,11 @@
 //!
 //! This whole module is compiled out of the `kvscf-local` build (feature `remote` off).
 
-#![allow(dead_code)]
-
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use kvscf_core::{focus_with, App, EdgeWindow, Instance, Remote};
+use kvscf_core::{focus_with, EdgeWindow, Instance};
 
 use std::collections::HashSet;
 
@@ -109,7 +107,6 @@ struct Snapshot {
 /// The app-facing handle. Owns the sender that feeds the publisher thread.
 pub struct Channel {
     tx: Sender<Snapshot>,
-    host: String,
 }
 
 impl Channel {
@@ -117,7 +114,6 @@ impl Channel {
     /// `KVSCF_TOKEN` is configured.
     pub fn start() -> Option<Channel> {
         let cfg = Config::load()?;
-        let host = cfg.this_host.clone();
         let (tx, rx) = mpsc::channel::<Snapshot>();
 
         {
@@ -140,7 +136,7 @@ impl Channel {
             cfg.instances_key(),
             cfg.focus_channel()
         );
-        Some(Channel { tx, host })
+        Some(Channel { tx })
     }
 
     /// Hand the latest window/app lists to the publisher thread (non-blocking). `favorited` is the
@@ -160,10 +156,6 @@ impl Channel {
             favorited: favorited.clone(),
             dimmed_favorites: dimmed_favorites.to_vec(),
         });
-    }
-
-    pub fn host(&self) -> &str {
-        &self.host
     }
 }
 
@@ -294,9 +286,9 @@ fn build_instances_json(
                 "id": i.hwnd.to_string(),
                 "label": i.label(),
                 "workspace": i.workspace,
-                "remote": remote_kind(&i.remote),
+                "remote": i.remote.kind(),
                 "remote_host": i.remote.host(),
-                "app": app_str(i.app),
+                "app": i.app.key(),
                 "active_file": i.active_file,
                 "z_index": i.z_index,
                 "running": true,
@@ -306,14 +298,13 @@ fn build_instances_json(
         .collect();
 
     instances.extend(dimmed.iter().map(|f| {
-        let (workspace, host) = split_label(&f.label);
         serde_json::json!({
             "id": f.uri,                       // folder URI, not an HWND — it has no window
             "label": f.label,
-            "workspace": workspace,
-            "remote": if host.is_some() { "ssh" } else { "local" }, // best-effort from the URI
-            "remote_host": host,
-            "app": app_str(f.app),
+            "workspace": f.workspace,
+            "remote": if f.host.is_some() { "ssh" } else { "local" }, // best-effort from the URI
+            "remote_host": f.host,
+            "app": f.app.key(),
             "active_file": serde_json::Value::Null,
             "z_index": serde_json::Value::Null,
             "running": false,
@@ -327,19 +318,6 @@ fn build_instances_json(
         "instances": instances,
     })
     .to_string()
-}
-
-/// Split a `workspace (host)` label back into its parts (`host` is `None` when local).
-fn split_label(label: &str) -> (String, Option<String>) {
-    if let Some(idx) = label.rfind(" (") {
-        if label.ends_with(')') {
-            return (
-                label[..idx].to_string(),
-                Some(label[idx + 2..label.len() - 1].to_string()),
-            );
-        }
-    }
-    (label.to_string(), None)
 }
 
 /// Build the Edge-window JSON payload (WI #474). Same focus channel — `id` is the HWND.
@@ -429,25 +407,6 @@ fn parse_command(payload: &str, expected_token: &str) -> Option<Command> {
     }
 }
 
-fn remote_kind(remote: &Remote) -> &'static str {
-    match remote {
-        Remote::Local => "local",
-        Remote::Ssh(_) => "ssh",
-        Remote::Wsl(_) => "wsl",
-        Remote::DevContainer(_) => "devcontainer",
-        Remote::Codespaces(_) => "codespaces",
-    }
-}
-
-fn app_str(app: App) -> &'static str {
-    match app {
-        App::Stable => "stable",
-        App::Insiders => "insiders",
-        App::Exploration => "exploration",
-        App::Unknown => "unknown",
-    }
-}
-
 fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -492,6 +451,7 @@ fn token_from_registry() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kvscf_core::{App, Remote};
 
     const TOK: &str = "s3cret";
 
@@ -563,6 +523,8 @@ mod tests {
             app: App::Insiders,
             uri: "vscode-remote://ssh-remote+kai/home/ken/src/kyac".into(),
             label: "kyac (kai)".into(),
+            workspace: "kyac".into(),
+            host: Some("kai".into()),
         }];
         let v: serde_json::Value =
             serde_json::from_str(&build_instances_json(&cfg, &[inst], &favorited, &dimmed))
