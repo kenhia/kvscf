@@ -18,6 +18,14 @@ pub struct SetEntry {
     pub uri: String,
     /// Human label, e.g. `korg (kai)`.
     pub label: String,
+    /// Workspace (folder) name on its own — kept structured so consumers (the wire payload)
+    /// never have to reverse-parse it back out of `label` (WI #495). Only the remote build
+    /// reads these two today, hence the cfg_attr.
+    #[cfg_attr(not(feature = "remote"), allow(dead_code))]
+    pub workspace: String,
+    /// Remote host, `None` when local.
+    #[cfg_attr(not(feature = "remote"), allow(dead_code))]
+    pub host: Option<String>,
 }
 
 impl SetEntry {
@@ -55,23 +63,6 @@ fn launcher(app: App) -> &'static str {
         App::Insiders => "code-insiders",
         App::Exploration => "code-exploration",
         _ => "code",
-    }
-}
-
-fn app_key(app: App) -> &'static str {
-    match app {
-        App::Stable => "stable",
-        App::Insiders => "insiders",
-        App::Exploration => "exploration",
-        App::Unknown => "unknown",
-    }
-}
-
-fn app_from_key(k: &str) -> App {
-    match k {
-        "insiders" => App::Insiders,
-        "exploration" => App::Exploration,
-        _ => App::Stable,
     }
 }
 
@@ -161,14 +152,17 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// Resolve the currently open VS Code windows to set entries. Returns `(resolved, unresolved)`
-/// where `resolved` pairs each open window with the folder URI to relaunch it, and `unresolved`
-/// lists labels whose URI couldn't be found (dropped).
-pub fn resolve_open_set() -> (Vec<(Instance, SetEntry)>, Vec<String>) {
+/// Resolve open VS Code windows (already scanned by the caller) to set entries. Returns
+/// `(resolved, unresolved)` where `resolved` pairs each open window with the folder URI to
+/// relaunch it, and `unresolved` lists labels whose URI couldn't be found (dropped).
+///
+/// Takes the caller's scan so the app's 1s refresh doesn't run a second `EnumWindows` +
+/// per-window process-image pass on top of the one it just did (WI #499).
+pub fn resolve_open_set(instances: &[Instance]) -> (Vec<(Instance, SetEntry)>, Vec<String>) {
     let mut cache: HashMap<&'static str, Vec<KnownUri>> = HashMap::new();
     let mut resolved = Vec::new();
     let mut unresolved = Vec::new();
-    for inst in scan() {
+    for inst in instances {
         let uris = cache
             .entry(storage_dir_name(inst.app))
             .or_insert_with(|| known_uris(inst.app));
@@ -183,13 +177,21 @@ pub fn resolve_open_set() -> (Vec<(Instance, SetEntry)>, Vec<String>) {
                     app: inst.app,
                     uri: u.uri.clone(),
                     label: inst.label(),
+                    workspace: inst.workspace.clone(),
+                    host: host.map(str::to_string),
                 };
-                resolved.push((inst, entry));
+                resolved.push((inst.clone(), entry));
             }
             None => unresolved.push(inst.label()),
         }
     }
     (resolved, unresolved)
+}
+
+/// Scan + resolve in one call — for one-shot callers (probes, button actions) that want a
+/// fresh view rather than the app's last cached scan.
+pub fn resolve_open_set_now() -> (Vec<(Instance, SetEntry)>, Vec<String>) {
+    resolve_open_set(&scan())
 }
 
 /// Launch one folder URI in its build (local `code`/`code-insiders`, detached, no console).
@@ -238,12 +240,14 @@ fn write_entries(path: PathBuf, entries: &[SetEntry]) -> std::io::Result<()> {
     }
     let arr: Vec<serde_json::Value> = entries
         .iter()
-        .map(|e| serde_json::json!({ "app": app_key(e.app), "uri": e.uri, "label": e.label }))
+        .map(|e| serde_json::json!({ "app": e.app.key(), "uri": e.uri, "label": e.label }))
         .collect();
     fs::write(path, serde_json::json!({ "entries": arr }).to_string())
 }
 
 /// Read a `{ "entries": [...] }` JSON file back into set entries. `None` if it's missing/unreadable.
+/// The file stores `{app, uri, label}`; workspace/host are re-derived from the URI (falling back
+/// to the label verbatim if the URI is in a shape we don't know).
 fn read_entries(path: PathBuf) -> Option<Vec<SetEntry>> {
     let text = fs::read_to_string(path).ok()?;
     let json: serde_json::Value = serde_json::from_str(&text).ok()?;
@@ -251,14 +255,19 @@ fn read_entries(path: PathBuf) -> Option<Vec<SetEntry>> {
     Some(
         arr.iter()
             .filter_map(|e| {
+                let uri = e.get("uri")?.as_str()?.to_string();
+                let label = e
+                    .get("label")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let (workspace, host) = parse_uri(&uri).unwrap_or((label.clone(), None));
                 Some(SetEntry {
-                    app: app_from_key(e.get("app")?.as_str()?),
-                    uri: e.get("uri")?.as_str()?.to_string(),
-                    label: e
-                        .get("label")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string(),
+                    app: App::from_key(e.get("app")?.as_str()?),
+                    uri,
+                    label,
+                    workspace,
+                    host,
                 })
             })
             .collect(),
@@ -300,4 +309,89 @@ pub fn launch_favorite(uri: &str) -> bool {
         return false;
     };
     launch(&entry).is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- parse_uri (WI #498): the favorites/relaunch identity path ---
+
+    #[test]
+    fn ssh_uri() {
+        assert_eq!(
+            parse_uri("vscode-remote://ssh-remote+kai/home/ken/src/kyac"),
+            Some(("kyac".into(), Some("kai".into())))
+        );
+    }
+
+    #[test]
+    fn ssh_uri_with_user() {
+        assert_eq!(
+            parse_uri("vscode-remote://ssh-remote+ken@kai/home/ken/src/foo"),
+            Some(("foo".into(), Some("kai".into())))
+        );
+    }
+
+    #[test]
+    fn local_file_uri_with_encoded_drive() {
+        // VS Code stores Windows drives percent-encoded: file:///d%3A/ClaudeWorks/kvscf
+        assert_eq!(
+            parse_uri("file:///d%3A/ClaudeWorks/kvscf"),
+            Some(("kvscf".into(), None))
+        );
+    }
+
+    #[test]
+    fn file_uri_trailing_slash_and_encoded_space() {
+        assert_eq!(
+            parse_uri("file:///c%3A/My%20Projects/app/"),
+            Some(("app".into(), None))
+        );
+    }
+
+    #[test]
+    fn unknown_scheme_is_none() {
+        assert_eq!(parse_uri("http://example.com/x"), None);
+        // ssh authority with no path — degenerate, unmatchable.
+        assert_eq!(parse_uri("vscode-remote://ssh-remote+kai"), None);
+    }
+
+    // --- percent_decode ---
+
+    #[test]
+    fn decodes_hex_escapes() {
+        assert_eq!(percent_decode("%41%42c"), "ABc");
+        assert_eq!(percent_decode("d%3A/x"), "d:/x");
+    }
+
+    #[test]
+    fn malformed_escapes_pass_through() {
+        assert_eq!(percent_decode("100%"), "100%");
+        assert_eq!(percent_decode("%G1"), "%G1");
+        assert_eq!(percent_decode("%2"), "%2");
+    }
+
+    // --- persisted-entry roundtrip: workspace/host re-derived from the URI on load ---
+
+    #[test]
+    fn read_entries_derives_parts_from_uri() {
+        let dir = std::env::temp_dir().join("kvscf-winset-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("set.json");
+        let entries = vec![SetEntry {
+            app: App::Insiders,
+            uri: "vscode-remote://ssh-remote+kai/home/ken/src/kyac".into(),
+            label: "kyac (kai)".into(),
+            workspace: "kyac".into(),
+            host: Some("kai".into()),
+        }];
+        write_entries(path.clone(), &entries).unwrap();
+        let back = read_entries(path).unwrap();
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].app, App::Insiders);
+        assert_eq!(back[0].workspace, "kyac");
+        assert_eq!(back[0].host.as_deref(), Some("kai"));
+        assert_eq!(back[0].label, "kyac (kai)");
+    }
 }

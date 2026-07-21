@@ -148,7 +148,7 @@ pub fn run() -> eframe::Result<()> {
 
     // Headless probe: resolve open windows -> folder URIs (WI #469 verification).
     if std::env::args().any(|a| a == "--dump-set") {
-        let (resolved, unresolved) = winset::resolve_open_set();
+        let (resolved, unresolved) = winset::resolve_open_set_now();
         for (_, e) in &resolved {
             println!("{:<34} {:<10} {}", e.label, format!("{:?}", e.app), e.uri);
         }
@@ -256,11 +256,7 @@ impl KvscfApp {
         // VS Code: fastest-to-scan ordering — lowercased workspace name (hosts interleaved).
         items.sort_by_key(|i| i.workspace.to_lowercase());
         // Edge: named windows first, then by label (both alphabetical).
-        edge.sort_by(|a, b| {
-            b.named
-                .cmp(&a.named)
-                .then_with(|| a.label.to_lowercase().cmp(&b.label.to_lowercase()))
-        });
+        kvscf_core::sort_edge_windows(&mut edge);
         self.items = items;
         self.edge = edge;
         // Apps: configured in the registry, resolved to running/not each refresh.
@@ -294,7 +290,7 @@ impl KvscfApp {
             .iter()
             .any(|i| !self.uri_cache.contains_key(&i.hwnd));
         if has_new {
-            let (resolved, _unresolved) = winset::resolve_open_set();
+            let (resolved, _unresolved) = winset::resolve_open_set(&self.items);
             for (inst, entry) in resolved {
                 self.uri_cache.insert(inst.hwnd, entry);
             }
@@ -399,7 +395,7 @@ impl KvscfApp {
     /// and remember the closed set to relaunch after the update. Locals are left alone.
     fn ua_close_extras(&mut self) {
         use std::collections::HashMap;
-        let (resolved, _unresolved) = winset::resolve_open_set();
+        let (resolved, _unresolved) = winset::resolve_open_set_now();
         let mut groups: HashMap<(String, App), Vec<(Instance, winset::SetEntry)>> = HashMap::new();
         for (inst, entry) in resolved {
             // Only remote windows are grouped/closed; locals are left open.
@@ -569,7 +565,7 @@ impl eframe::App for KvscfApp {
                                 .on_hover_text("Save the currently open windows as 'last'")
                                 .clicked()
                             {
-                                let (resolved, _) = winset::resolve_open_set();
+                                let (resolved, _) = winset::resolve_open_set_now();
                                 let entries: Vec<_> =
                                     resolved.into_iter().map(|(_, e)| e).collect();
                                 let n = entries.len();
