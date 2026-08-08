@@ -213,6 +213,81 @@ kvscf validates the token, sees a non-integer `id`, finds that favorite and **re
 before the window exists; the next published snapshot will flip that row to `running:true` with a real
 HWND `id`. Tapping an open row is exactly as before.
 
+## 6. Launcher buttons (sprint 016) — a grid of "open this URL in *that* Edge window"
+
+The Stream Deck replacement (korg program 1143, WI #1133). kvscf publishes a **grid of buttons**;
+kdeskdash renders them and sends back the tapped button's key. kvscf then foregrounds the
+button's preferred Edge window and opens the URL **in it** — the part a Stream Deck cannot do.
+
+**This contract is frozen.** Build the kdeskdash side against it without a round-trip, exactly as
+the Edge contract in §3 was.
+
+- **Key:** `kvscf:launcher:<host>` (e.g. `kvscf:launcher:kwork`), Redis **String** = JSON,
+  **TTL 10s**, republished ~1s. Discover via `SCAN kvscf:launcher:*`.
+- **Payload:**
+
+```json
+{
+  "host": "kwork",
+  "ts": 1784416199,
+  "grid": { "rows": 3, "cols": 9 },
+  "buttons": [
+    { "key": "ado-pipelines", "label": "Pipelines", "color": "#2ec4c4",
+      "row": 0, "col": 0, "w": 2, "h": 1 },
+    { "key": "ado-wits", "label": "Work Items", "color": "#2ec4c4",
+      "row": 0, "col": 2, "w": 1, "h": 1 }
+  ]
+}
+```
+
+Field notes:
+- `key` — the **stable button id**; this is what the command echoes back (like `app` in §4, and
+  for the same reason: the action is configured, not derived from a handle).
+- `label` — ready-to-render button text. **May contain emoji / wide Unicode** — check your font
+  coverage, Ken's names do.
+- `color` — background, as authored: a `#rrggbb` string or a palette name. Treat an unknown or
+  empty value as "use the default" rather than failing the button.
+- `grid` — the grid the placements are relative to. **Published rather than assumed on both
+  sides**, so the editor's idea of the layout and the renderer's can never drift. Read it; do not
+  hard-code 3x9.
+- `row`, `col` — 0-based top-left cell. `w`, `h` — span in cells, each 1..3.
+
+**There is deliberately no `url` and no `target` in this payload.** The dashboard draws buttons;
+it never learns where they go. On kwork those URLs are an employer's business and they stay on
+the employer's machine. kvscf resolves the destination itself from `key`.
+
+**Placements are already validated** — kvscf drops out-of-bounds, oversized and overlapping
+buttons before publishing, earlier-wins on a contested cell. Validate again on your side anyway
+and skip a bad button rather than failing the mode; a feed is not a promise.
+
+### Command (kdeskdash publishes → kvscf consumes)
+
+Same channel `kvscf:focus:<host>`, keyed by `button`:
+
+```json
+{ "token": "kvscf-<64 hex>", "button": "ado-pipelines" }
+```
+
+**Precedence is `button` > `app` > `id`.** The §2-§5 forms are unchanged.
+
+kvscf validates the token, then:
+
+1. If the button names a window → find the **named** Edge window whose label matches it
+   (case-insensitive exact) → foreground it.
+2. If that window is gone, **or** the button is "use current" → foreground the **top-Z** Edge
+   window. *These are the same code path on purpose*, so the fallback runs constantly rather than
+   first executing on the day a window got renamed.
+3. If no Edge window is open at all → launch Edge with the URL and let it choose.
+4. Settle ~100ms, then open the URL.
+
+Fire-and-forget, no ack — show optimistic feedback as you do for §2.
+
+**Suggested UI:** a grid occupying ~70% of the panel width. On the 1920x440 panel a 70/30 split
+with 3 rows works out to **9 columns, 27 cells of ~149x146px (~21.6mm)** — larger than a Stream
+Deck key. **Cache the last-good config and dim it when the feed expires** rather than blanking:
+the 10s TTL is right for live window lists, but a work machine sleeps and locks all day and a
+button layout that vanishes with it is useless.
+
 ## Reference
 
 - kvscf publisher/subscriber: `crates/kvscf-app/src/remote.rs` in this repo.

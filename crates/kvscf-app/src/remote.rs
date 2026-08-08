@@ -7,11 +7,15 @@
 //!   `running:false` rows whose `id` is the folder URI** rather than an HWND (sprint 008).
 //! - **Publish** the configured apps to `kvscf:apps:<host>` (JSON, same TTL); each is
 //!   `{key,label,running,id?}` — `id` is the HWND when running (sprint 007 Apps tab).
+//! - **Publish** the Launcher buttons to `kvscf:launcher:<host>` (JSON, same TTL): the grid plus
+//!   `{key,label,color,row,col,w,h}` per button (sprint 016). **No `url` and no `target`** — the
+//!   dashboard draws buttons, it never learns where they go.
 //! - **Subscribe** to `kvscf:focus:<host>` (pub/sub). The dashboard just echoes back the tapped
 //!   row's id, and we route it: `{token,id:<int>,maximize}` foregrounds that HWND;
 //!   `{token,id:<uri>}` relaunches that closed favorite (`crate::winset::launch_favorite`);
 //!   `{token,app:<key>}` does **focus-if-running-else-launch** for a configured app
-//!   (`crate::apps::activate`). Token gates all three.
+//!   (`crate::apps::activate`); `{token,button:<key>}` opens a Launcher button's URL in its
+//!   preferred Edge window (`crate::launcher::activate`). Token gates all four.
 //!
 //! Redis itself is unauthenticated (trusted LAN), so `KVSCF_TOKEN` is the app-level gate on the
 //! focus command (the only action). Endpoint + token come from env / a `.env` file.
@@ -27,6 +31,7 @@ use kvscf_core::{focus_with, EdgeWindow, Instance};
 use std::collections::HashSet;
 
 use crate::apps::{self, AppEntry};
+use crate::launcher::{self, LauncherSet};
 use crate::winset::{self, SetEntry};
 
 const DEFAULT_HOST: &str = "192.168.1.144"; // rpidash2 LAN IP (pinned, per handoff)
@@ -89,6 +94,10 @@ impl Config {
         format!("kvscf:apps:{}", self.this_host)
     }
 
+    fn launcher_key(&self) -> String {
+        format!("kvscf:launcher:{}", self.this_host)
+    }
+
     fn focus_channel(&self) -> String {
         format!("kvscf:focus:{}", self.this_host)
     }
@@ -100,6 +109,7 @@ struct Snapshot {
     instances: Vec<Instance>,
     edge: Vec<EdgeWindow>,
     apps: Vec<AppEntry>,
+    launcher: LauncherSet,
     favorited: HashSet<i64>,
     dimmed_favorites: Vec<SetEntry>,
 }
@@ -146,6 +156,7 @@ impl Channel {
         items: &[Instance],
         edge: &[EdgeWindow],
         apps: &[AppEntry],
+        launcher: &LauncherSet,
         favorited: &HashSet<i64>,
         dimmed_favorites: &[SetEntry],
     ) {
@@ -153,6 +164,7 @@ impl Channel {
             instances: items.to_vec(),
             edge: edge.to_vec(),
             apps: apps.to_vec(),
+            launcher: launcher.clone(),
             favorited: favorited.clone(),
             dimmed_favorites: dimmed_favorites.to_vec(),
         });
@@ -164,6 +176,7 @@ fn publisher_loop(cfg: Config, rx: Receiver<Snapshot>) {
     let inst_key = cfg.instances_key();
     let edge_key = cfg.edge_key();
     let apps_key = cfg.apps_key();
+    let launcher_key = cfg.launcher_key();
     loop {
         let client = match redis::Client::open(cfg.url()) {
             Ok(c) => c,
@@ -210,7 +223,12 @@ fn publisher_loop(cfg: Config, rx: Receiver<Snapshot>) {
                 ),
                 &mut con,
             ) && set(&edge_key, build_edge_json(&cfg, &latest.edge), &mut con)
-                && set(&apps_key, build_apps_json(&cfg, &latest.apps), &mut con);
+                && set(&apps_key, build_apps_json(&cfg, &latest.apps), &mut con)
+                && set(
+                    &launcher_key,
+                    build_launcher_json(&cfg, &latest.launcher),
+                    &mut con,
+                );
             if !ok {
                 break; // drop out to reconnect
             }
@@ -257,6 +275,11 @@ fn subscriber_loop(cfg: Config) {
                 // Focus-if-running-else-launch the configured app (may spawn + poll).
                 Some(Command::App { key }) => {
                     apps::activate(&key);
+                }
+                // Foreground the button's preferred Edge window, then open its URL there.
+                // Blocks this thread for the settle delay, which is what it is for.
+                Some(Command::Button { key }) => {
+                    launcher::activate(&key);
                 }
                 // Relaunch a favorite whose window is closed (reads the persisted list).
                 Some(Command::Favorite { uri }) => {
@@ -367,12 +390,46 @@ fn build_apps_json(cfg: &Config, apps: &[AppEntry]) -> String {
     .to_string()
 }
 
+/// Build the Launcher JSON payload (sprint 016). The grid is published rather than assumed on
+/// both sides, so the editor's idea of the layout and the panel's can never drift apart.
+///
+/// **`url` and `target` are deliberately not here.** The dashboard needs a label, a color and a
+/// rectangle; it does not need to know where a button goes, and on kwork those URLs are an
+/// employer's business. The command echoes back `key` and this side resolves the rest.
+fn build_launcher_json(cfg: &Config, set: &LauncherSet) -> String {
+    let items: Vec<serde_json::Value> = set
+        .buttons
+        .iter()
+        .map(|b| {
+            serde_json::json!({
+                "key": b.key,
+                "label": b.label,
+                "color": b.color,
+                "row": b.row,
+                "col": b.col,
+                "w": b.w,
+                "h": b.h,
+            })
+        })
+        .collect();
+
+    serde_json::json!({
+        "host": cfg.this_host,
+        "ts": now_secs(),
+        "grid": { "rows": set.grid.rows, "cols": set.grid.cols },
+        "buttons": items,
+    })
+    .to_string()
+}
+
 /// A parsed, authenticated command off the focus channel.
 enum Command {
     /// Foreground an explicit HWND (VS Code / Edge rows).
     Focus { hwnd: i64, maximize: bool },
     /// Focus-if-running-else-launch a configured app by key (Apps tab).
     App { key: String },
+    /// Open a Launcher button's URL in its preferred Edge window (sprint 016).
+    Button { key: String },
     /// Relaunch a not-open Code favorite by folder URI (sprint 008).
     Favorite { uri: String },
 }
@@ -380,6 +437,7 @@ enum Command {
 /// Parse + authenticate a command. Returns `None` unless the token matches.
 ///
 /// Routing, so kdeskdash can stay uniform (it just echoes back the tapped row's `id`):
+/// - `button` present → [`Command::Button`] (checked first; a Launcher tap is unambiguous).
 /// - `app` present → [`Command::App`].
 /// - `id` parses as an integer → an HWND → [`Command::Focus`].
 /// - `id` is any other string → a favorite's folder URI → [`Command::Favorite`]. A not-open
@@ -389,6 +447,11 @@ fn parse_command(payload: &str, expected_token: &str) -> Option<Command> {
     let v: serde_json::Value = serde_json::from_str(payload).ok()?;
     if v.get("token")?.as_str()? != expected_token {
         return None;
+    }
+    if let Some(button) = v.get("button").and_then(|b| b.as_str()) {
+        return Some(Command::Button {
+            key: button.to_string(),
+        });
     }
     if let Some(app) = v.get("app").and_then(|a| a.as_str()) {
         return Some(Command::App {
@@ -483,6 +546,66 @@ mod tests {
             parse_command(&both, TOK),
             Some(Command::App { .. })
         ));
+    }
+
+    #[test]
+    fn button_command_parses_key_and_outranks_the_others() {
+        let msg = format!(r#"{{"token":"{TOK}","button":"ado-pipelines"}}"#);
+        match parse_command(&msg, TOK) {
+            Some(Command::Button { key }) => assert_eq!(key, "ado-pipelines"),
+            _ => panic!("expected Button command"),
+        }
+        // Precedence is button > app > id: a Launcher tap is unambiguous, so it wins outright
+        // rather than depending on which field the dashboard happened to fill.
+        let all = format!(r#"{{"token":"{TOK}","button":"b","app":"claude","id":"999"}}"#);
+        assert!(matches!(
+            parse_command(&all, TOK),
+            Some(Command::Button { .. })
+        ));
+        // Still token-gated, like every other verb.
+        let bad = r#"{"token":"nope","button":"b"}"#;
+        assert!(parse_command(bad, TOK).is_none());
+    }
+
+    #[test]
+    fn launcher_json_publishes_the_grid_but_never_the_url() {
+        let cfg = Config {
+            redis_host: "h".into(),
+            redis_port: 1,
+            token: TOK.into(),
+            this_host: "kwork".into(),
+        };
+        let set = LauncherSet {
+            grid: crate::launcher::Grid { rows: 3, cols: 9 },
+            buttons: vec![crate::launcher::LauncherButton {
+                key: "ado-pipelines".into(),
+                label: "Pipelines".into(),
+                url: "https://dev.azure.com/secret/thing".into(),
+                target: crate::launcher::Target::Named("GitHub".into()),
+                color: "#2ec4c4".into(),
+                row: 0,
+                col: 0,
+                w: 2,
+                h: 1,
+            }],
+        };
+        let raw = build_launcher_json(&cfg, &set);
+
+        // The whole point of keying the command: work URLs never leave the work box.
+        assert!(!raw.contains("dev.azure.com"));
+        assert!(!raw.contains("GitHub"));
+
+        let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(v["host"], "kwork");
+        assert_eq!(v["grid"]["rows"], 3);
+        assert_eq!(v["grid"]["cols"], 9);
+        let b = &v["buttons"].as_array().unwrap()[0];
+        assert_eq!(b["key"], "ado-pipelines");
+        assert_eq!(b["label"], "Pipelines");
+        assert_eq!(b["color"], "#2ec4c4");
+        assert_eq!(b["w"], 2);
+        assert!(b.get("url").is_none());
+        assert!(b.get("target").is_none());
     }
 
     #[test]
