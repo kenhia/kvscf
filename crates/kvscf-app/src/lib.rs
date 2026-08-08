@@ -23,6 +23,7 @@
 mod apps;
 mod dock;
 mod fonts;
+mod launcher;
 mod probes;
 mod rows;
 mod settings;
@@ -146,6 +147,10 @@ struct KvscfApp {
     items: Vec<Instance>,
     edge: Vec<EdgeWindow>,
     apps: Vec<AppEntry>,
+    /// Configured Launcher buttons + their grid (sprint 016). Published, not drawn locally —
+    /// so in the `kvscf-local` build nothing reads it.
+    #[cfg_attr(not(feature = "remote"), allow(dead_code))]
+    launcher: launcher::LauncherSet,
     /// Persisted Code favorites (sprint 008) — folders that can be relaunched when closed.
     favorites: Vec<winset::SetEntry>,
     /// HWND → resolved folder entry, filled incrementally so we only read VS Code's
@@ -180,6 +185,7 @@ impl KvscfApp {
             items: Vec::new(),
             edge: Vec::new(),
             apps: Vec::new(),
+            launcher: launcher::LauncherSet::default(),
             favorites: winset::load_favorites(),
             uri_cache: HashMap::new(),
             tab: Tab::Code,
@@ -215,6 +221,9 @@ impl KvscfApp {
         self.edge = edge;
         // Apps: configured in the registry, resolved to running/not each refresh.
         self.apps = apps::scan();
+        // Launcher buttons: same registry-reload cadence, so an edit reaches the panel in about
+        // two seconds without restarting anything.
+        self.launcher = launcher::scan();
         // Favorites need each open window's folder URI; keep the HWND→URI cache in step.
         self.refresh_uri_cache();
         self.last_scan = Instant::now();
@@ -230,7 +239,14 @@ impl KvscfApp {
                 .map(|(hwnd, _)| *hwnd)
                 .collect();
             let dimmed = self.dimmed_favorites();
-            ch.publish(&self.items, &self.edge, &self.apps, &favorited, &dimmed);
+            ch.publish(
+                &self.items,
+                &self.edge,
+                &self.apps,
+                &self.launcher,
+                &favorited,
+                &dimmed,
+            );
         }
     }
 

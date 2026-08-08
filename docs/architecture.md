@@ -156,6 +156,38 @@ running). Because a not-running app has no HWND, the command is keyed by `{token
 HWND) → `apps::activate` does focus-if-running-else-launch. The subscriber routes an `id` payload to
 HWND focus and an `app` payload to app activation. See [kdeskdash-vscode-mode.md](kdeskdash-vscode-mode.md) §4.
 
+## Launcher (`launcher`, WI #1133)
+
+The Stream Deck replacement (korg program 1143). A **button** is "open this URL, in *this* Edge
+window" — the part a Stream Deck cannot do, since it can neither choose the destination window nor
+bring it forward. Configured like `apps`, in the registry under
+`HKCU\Software\kenhia\kvscf\launcher\<key>` with `rows`/`cols` on the parent key, reloaded each
+refresh so an edit reaches the panel in ~2s without a restart.
+
+The verb is `focus_with(hwnd)` → settle ~100ms → spawn `msedge.exe <url>`: foregrounding the target
+is what makes it Chromium's last-active window, which is how the tab lands there. Proven in the
+sprint-016 spike (8/8 trials, no new windows, works from a minimized target — `sprints/016-launcher-verb`).
+
+Target resolution is `kvscf-core::pick_edge_target`, deliberately pure so it is unit-tested: a
+**named** Edge window matched case-insensitively and exactly, else the **top-Z** window, else
+cold-start Edge. *"Use current" and "the preferred window is gone" are the same path* — so the
+fallback runs constantly rather than first executing the day a window gets renamed. Matching is
+exact rather than a pattern because the problem it solves is data entry (window names contain
+emoji), which the editor's dropdown of live named windows answers directly; matching lives here, so
+patterns later would need no contract change.
+
+`validate_layout` drops buttons that cannot be drawn — unusable span, off-grid, or overlapping,
+earlier-wins — rather than publishing something undrawable.
+
+Remote: published to `kvscf:launcher:<host>` as the grid plus `{key,label,color,row,col,w,h}`, and
+commanded by `{token, button:<key>}` at precedence `button` > `app` > `id`. **The payload carries no
+`url` and no `target`** — the dashboard draws buttons and never learns where they go, which is what
+keeps work URLs on the work machine. See [kdeskdash-vscode-mode.md](kdeskdash-vscode-mode.md) §6.
+
+Two probes stand in for the not-yet-built editor: `--dump-launcher` resolves every button against
+the **live** window list (so a button silently degrading to the fallback is visible rather than
+inferred), and `--fire-button <key>` runs the whole verb with no dashboard or Redis round trip.
+
 ## Current-user registry (`userreg`)
 
 All `HKCU\Software\kenhia\kvscf` reads/writes (apps config, settings, `KVSCF_TOKEN`) go through
@@ -170,3 +202,10 @@ re-resolves the real hive each call, so once the profile mounts the reload self-
 
 `kvscf-local` compiles with `remote` off — the entire `remote` module and its deps are absent from the
 binary, so the work machine's copy contains no communication code at all.
+
+**This is on its way out.** kwork is the only consumer of `kvscf-local`, and the Launcher program
+(korg 1143) ends with kwork running the *full* build so it can publish `kvscf:launcher:kwork` to the
+rpidash3 panel beside it — against an isolated Redis, not the homelab's. Once that lands,
+`kvscf-local` has no consumer and the two-feature-set gate can probably collapse to one. Until then
+**it is still a real gate**: `cargo clippy -p kvscf-local --all-targets` catches fields that only the
+publisher reads, which a workspace build cannot see (it caught two in sprint 016).

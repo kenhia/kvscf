@@ -14,6 +14,8 @@ mod app;
 mod enumerate;
 #[cfg(windows)]
 mod focus;
+#[cfg(windows)]
+mod openurl;
 
 #[cfg(windows)]
 pub use app::{launch_and_focus, launch_app};
@@ -23,6 +25,8 @@ pub use enumerate::{
 };
 #[cfg(windows)]
 pub use focus::{close_window, focus, focus_unmitigated, focus_with, foreground_hwnd};
+#[cfg(windows)]
+pub use openurl::{edge_exe, open_url_in_window, URL_SETTLE};
 
 // Portable no-op stubs so the crate (and the parse tests) build on non-Windows hosts.
 #[cfg(not(windows))]
@@ -71,6 +75,12 @@ mod stubs {
         false
     }
     pub fn foreground_hwnd() -> Option<i64> {
+        None
+    }
+    pub fn open_url_in_window(_hwnd: Option<i64>, _url: &str) -> bool {
+        false
+    }
+    pub fn edge_exe() -> Option<std::path::PathBuf> {
         None
     }
 }
@@ -209,6 +219,100 @@ pub fn sort_edge_windows(windows: &mut [EdgeWindow]) {
             .cmp(&a.named)
             .then_with(|| a.label.to_lowercase().cmp(&b.label.to_lowercase()))
     });
+}
+
+/// Pick the Edge window a Launcher button should open its URL in (sprint 016, korg kvscf #1133).
+///
+/// `named` is the exact window name the button prefers, or `None` for "use current window".
+///
+/// **The fallback and "use current" are the same path on purpose.** A button with no preferred
+/// window, and a button whose preferred window has since been closed or renamed, both land on
+/// the top-Z Edge window. That means the fallback runs constantly instead of being rare code
+/// that first executes on the day a window got renamed.
+///
+/// Matching is a case-insensitive exact comparison, not a pattern. Ken's original ask was a
+/// regex, but the problem it was solving was *typing* names containing emoji — which the
+/// editor's dropdown of live named windows solves directly. Because matching happens here
+/// rather than on the dashboard, swapping in patterns later needs no contract change.
+///
+/// Returns `None` only when no Edge window is open at all — the cold-start case, where the
+/// caller launches Edge with the URL and lets it choose.
+pub fn pick_edge_target(windows: &[EdgeWindow], named: Option<&str>) -> Option<i64> {
+    if let Some(name) = named {
+        if let Some(w) = windows
+            .iter()
+            .find(|w| w.named && w.label.eq_ignore_ascii_case(name))
+        {
+            return Some(w.hwnd);
+        }
+    }
+    // z_index 0 == most-recently-active, so the minimum is the top-Z window.
+    windows.iter().min_by_key(|w| w.z_index).map(|w| w.hwnd)
+}
+
+#[cfg(test)]
+mod target_tests {
+    use super::*;
+
+    fn w(hwnd: i64, label: &str, named: bool, z: usize) -> EdgeWindow {
+        EdgeWindow {
+            hwnd,
+            label: label.into(),
+            named,
+            tab_count: None,
+            z_index: z,
+        }
+    }
+
+    fn fixture() -> Vec<EdgeWindow> {
+        vec![
+            w(10, "Wowhead-Main", true, 0),
+            w(20, "Homelab", true, 2),
+            w(30, "GitHub", true, 3),
+            w(40, "some tab title", false, 1),
+        ]
+    }
+
+    #[test]
+    fn named_target_wins_over_z_order() {
+        // GitHub is z=3, well below the top — being named is what selects it.
+        assert_eq!(pick_edge_target(&fixture(), Some("GitHub")), Some(30));
+        assert_eq!(pick_edge_target(&fixture(), Some("Homelab")), Some(20));
+    }
+
+    #[test]
+    fn name_match_is_case_insensitive() {
+        assert_eq!(pick_edge_target(&fixture(), Some("github")), Some(30));
+        assert_eq!(pick_edge_target(&fixture(), Some("GITHUB")), Some(30));
+    }
+
+    #[test]
+    fn use_current_takes_the_top_z_window() {
+        assert_eq!(pick_edge_target(&fixture(), None), Some(10));
+    }
+
+    #[test]
+    fn missing_named_window_falls_back_to_top_z() {
+        // The whole point of the shared path: a renamed/closed target degrades to "use current"
+        // rather than doing nothing.
+        assert_eq!(pick_edge_target(&fixture(), Some("Gone")), Some(10));
+    }
+
+    #[test]
+    fn unnamed_windows_never_match_a_name() {
+        // An unnamed window's label is its active tab title and changes constantly; matching it
+        // would make buttons fire at whatever page happened to be open.
+        assert_eq!(
+            pick_edge_target(&fixture(), Some("some tab title")),
+            Some(10) // fell through to top-Z, did not select hwnd 40
+        );
+    }
+
+    #[test]
+    fn no_edge_windows_means_cold_start() {
+        assert_eq!(pick_edge_target(&[], Some("GitHub")), None);
+        assert_eq!(pick_edge_target(&[], None), None);
+    }
 }
 
 /// How to recognize a configured app's window (Apps tab, sprint 007). A window matches when every

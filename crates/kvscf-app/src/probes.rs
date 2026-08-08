@@ -6,12 +6,18 @@ use std::time::Duration;
 
 use eframe::egui::{self, FontFamily, FontId};
 
-use crate::{apps, dock, fonts, winset, APP_TITLE, REMOTE_BUILD};
+use crate::{apps, dock, fonts, launcher, winset, APP_TITLE, REMOTE_BUILD};
 
 /// If a probe flag (or `--help`) is present, run it and return `true` (the caller exits).
 pub fn try_run() -> bool {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let has = |flag: &str| args.iter().any(|a| a == flag);
+    let value_of = |flag: &str| {
+        args.iter()
+            .position(|a| a == flag)
+            .and_then(|i| args.get(i + 1))
+            .cloned()
+    };
 
     if has("--help") || has("-h") {
         print_help();
@@ -21,6 +27,10 @@ pub fn try_run() -> bool {
         probe_glyphs();
     } else if has("--dump-apps") {
         dump_apps();
+    } else if has("--dump-launcher") {
+        dump_launcher();
+    } else if has("--fire-button") {
+        fire_button(value_of("--fire-button"));
     } else if has("--probe-fullscreen") {
         probe_fullscreen();
     } else if has("--dump-set") {
@@ -39,6 +49,8 @@ fn print_help() {
          \x20 --build-info        which build this is (remote={REMOTE_BUILD} here)\n\
          \x20 --probe-glyphs      does the bundled emoji font cover the tested glyphs?\n\
          \x20 --dump-apps         configured Apps entries + resolved running state\n\
+         \x20 --dump-launcher     Launcher grid + buttons, and where each would open RIGHT NOW\n\
+         \x20 --fire-button KEY   run one Launcher button now (no dashboard needed)\n\
          \x20 --probe-fullscreen  sample fullscreen detection for 20s (dock yield, WI #481)\n\
          \x20 --dump-set          open windows resolved to relaunchable folder URIs"
     );
@@ -82,6 +94,60 @@ fn dump_apps() {
             "{:<16} {:<12} launch={:?}:{}",
             e.label, state, e.launch.kind, e.launch.target
         );
+    }
+}
+
+/// Load the Launcher config and show, for each button, the Edge window it would open in **right
+/// now** (sprint 016 verification).
+///
+/// Resolving live is the point: a button whose named window is closed silently degrades to the
+/// top-Z fallback, and that is invisible in the config alone. This is how you tell "configured
+/// correctly" from "will actually do what I meant".
+fn dump_launcher() {
+    let set = launcher::scan();
+    println!("grid: {} rows x {} cols\n", set.grid.rows, set.grid.cols);
+    if set.buttons.is_empty() {
+        println!("(no buttons configured under HKCU\\Software\\kenhia\\kvscf\\launcher)");
+        return;
+    }
+
+    let windows = kvscf_core::scan_edge();
+    for b in &set.buttons {
+        let wanted = launcher::preferred_name(&b.target);
+        let hwnd = kvscf_core::pick_edge_target(&windows, wanted);
+        let target = match (wanted, hwnd) {
+            (_, None) => "no Edge window open — would cold-start Edge".to_string(),
+            (None, Some(h)) => format!("top-Z window (hwnd={h})  [use current]"),
+            (Some(name), Some(h)) => {
+                let matched = windows
+                    .iter()
+                    .any(|w| w.named && w.label.eq_ignore_ascii_case(name) && w.hwnd == h);
+                if matched {
+                    format!("{name:?} (hwnd={h})")
+                } else {
+                    format!("{name:?} NOT OPEN -> falling back to top-Z (hwnd={h})")
+                }
+            }
+        };
+        println!(
+            "{:<18} ({},{}) {}x{}  -> {}\n{:>21}{}",
+            b.key, b.row, b.col, b.w, b.h, target, "", b.url
+        );
+    }
+}
+
+/// Fire one Launcher button immediately — the whole verb, without a dashboard or a Redis round
+/// trip. The fastest way to check a newly-added button does what you meant.
+fn fire_button(key: Option<String>) {
+    let Some(key) = key else {
+        println!("usage: --fire-button <key>   (see --dump-launcher for the configured keys)");
+        return;
+    };
+    println!("firing launcher button {key:?} …");
+    if launcher::activate(&key) {
+        println!("ok");
+    } else {
+        println!("FAILED — see the message above (unknown key, or Edge could not be launched)");
     }
 }
 
