@@ -117,3 +117,16 @@ in the local build until this slice read them, and sprint 016 found two real def
 **Driven by hand on cleo** by Ken before ship, from the release build (`cargo build --release`,
 `kvscf.exe` copied to `C:\tools\bin`) — the agent's own instance could not, since the rail was
 already running and kvscf is single-instance.
+
+### CI caught what the local gate could not
+
+The first push failed CI with six `Stroke::new(2.0, …)` errors: *"falling back to `f32` as the
+trait bound `f32: From<f64>` is not satisfied"*. `Stroke::new` takes `impl Into<f32>`, which leaves
+a bare float literal unconstrained, and newer rustc has turned that fallback into an error
+(rust-lang#154024). All six are now `2.0_f32` / `1.0_f32`.
+
+The local gate had been green — on **rustc 1.95** (April), while CI's `dtolnay/rust-toolchain@stable`
+installs the current one, **1.97.1**. Running the same commands is not the same as running the same
+gate. cleo's toolchain was updated to match; the whole workflow — fmt, both clippy passes, both
+builds, tests, and the `--build-info` remote=false assertion — was then re-run locally before the
+second push.

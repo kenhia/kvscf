@@ -575,7 +575,7 @@ impl Editor {
         // --- paint ---
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 4.0, PANEL_VOID);
-        let seam = Stroke::new(1.0, Color32::from_rgb(0x1b, 0x23, 0x34));
+        let seam = Stroke::new(1.0_f32, Color32::from_rgb(0x1b, 0x23, 0x34));
         for r in 0..grid.rows {
             for c in 0..grid.cols {
                 painter.rect_stroke(cell_rect(rect, cell, r, c, 1, 1).shrink(0.5), 2.0, seam);
@@ -610,7 +610,7 @@ impl Editor {
             sel,
             fill_for(&self.form.color),
             &self.form.label,
-            Stroke::new(2.0, PANEL_INK),
+            Stroke::new(2.0_f32, PANEL_INK),
         );
         // The live drag, in accent or refusal.
         if let Some((r, c, w, h)) = proposal {
@@ -623,7 +623,7 @@ impl Editor {
                 painter.rect_stroke(
                     cell_rect(rect, cell, r, c, w, h).shrink(1.0),
                     3.0,
-                    Stroke::new(2.0, color),
+                    Stroke::new(2.0_f32, color),
                 );
             }
         }
@@ -820,11 +820,11 @@ fn swatch(ui: &mut Ui, fill: Color32, selected: bool) -> egui::Response {
             PANEL_INK,
         );
         let stroke = if selected {
-            Stroke::new(2.0, ui.visuals().strong_text_color())
+            Stroke::new(2.0_f32, ui.visuals().strong_text_color())
         } else if resp.hovered() {
-            Stroke::new(1.0, ui.visuals().weak_text_color())
+            Stroke::new(1.0_f32, ui.visuals().weak_text_color())
         } else {
-            Stroke::new(1.0, Color32::from_rgb(0x1b, 0x23, 0x34))
+            Stroke::new(1.0_f32, Color32::from_rgb(0x1b, 0x23, 0x34))
         };
         painter.rect_stroke(rect, 3.0, stroke);
     }
