@@ -99,7 +99,8 @@ cargo run -p kvscf-core --bin kvscf-core -- focus <hwnd>
 ## Configuration (full build only)
 
 Remote mode needs a Redis endpoint and a shared token (`KVSCF_TOKEN`), read from
-`HKCU\Software\kenhia\kvscf` (preferred) or a `.env`. The wire contract is in
+`HKCU\Software\kenhia\kvscf` (preferred) or a `.env`. Add `KVSCF_REDIS_PASSWORD` when the endpoint
+runs `requirepass` — optional, since the default rpidash2 endpoint does not. The wire contract is in
 [docs/kdeskdash-vscode-mode.md](docs/kdeskdash-vscode-mode.md); how it all fits together is in
 [docs/architecture.md](docs/architecture.md). `kvscf-local` needs none of this.
 
