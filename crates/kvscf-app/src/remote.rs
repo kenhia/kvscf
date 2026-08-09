@@ -17,8 +17,18 @@
 //!   (`crate::apps::activate`); `{token,button:<key>}` opens a Launcher button's URL in its
 //!   preferred Edge window (`crate::launcher::activate`). Token gates all four.
 //!
-//! Redis itself is unauthenticated (trusted LAN), so `KVSCF_TOKEN` is the app-level gate on the
-//! focus command (the only action). Endpoint + token come from env / a `.env` file.
+//! Two independent gates, and they protect different things. `KVSCF_TOKEN` is the **app-level**
+//! gate on the focus command (the only action) and is mandatory — without it the channel stays
+//! off rather than run open. `KVSCF_REDIS_PASSWORD` is the **transport** gate, and is optional:
+//! cleo publishes to rpidash2:6380, which is deliberately unauthenticated on the trusted home
+//! LAN, and no password there means no AUTH rather than no channel.
+//!
+//! The transport gate arrived in sprint 018 (WI #1147) because the Launcher's kwork half needs
+//! it: kwork publishes to rpidash3 over the LAN, where the tailnet ACLs that cover every other
+//! homelab path do not reach. Until then this module assumed an unauthenticated Redis outright.
+//!
+//! Endpoint, token and password come from `HKCU\Software\kenhia\kvscf` first, then env / a
+//! `.env` file.
 //!
 //! This whole module is compiled out of the `kvscf-local` build (feature `remote` off).
 
@@ -45,6 +55,9 @@ const RECONNECT_BACKOFF: Duration = Duration::from_secs(5);
 struct Config {
     redis_host: String,
     redis_port: u16,
+    /// Redis `requirepass`, when the endpoint has one. `None` = connect unauthenticated, which is
+    /// correct for rpidash2:6380 and must stay the untouched default.
+    redis_password: Option<String>,
     token: String,
     this_host: String,
 }
@@ -63,7 +76,7 @@ impl Config {
         // Token: registry (preferred — HKCU\Software\kenhia\kvscf) → env/.env fallback. It works
         // regardless of where the exe is launched from (a pinned launch from C:\tools\bin has no
         // cwd/exe-dir .env). Mandatory: without it the channel stays off rather than run open.
-        let token = token_from_registry()
+        let token = registry_value("KVSCF_TOKEN")
             .or_else(|| std::env::var("KVSCF_TOKEN").ok())
             .filter(|t| !t.is_empty())?;
 
@@ -73,12 +86,42 @@ impl Config {
                 .ok()
                 .and_then(|p| p.parse().ok())
                 .unwrap_or(DEFAULT_PORT),
+            // Same precedence as the token, and optional for the same reason it is not: an
+            // endpoint without `requirepass` is a legitimate configuration here, not a
+            // misconfiguration to refuse.
+            redis_password: registry_value("KVSCF_REDIS_PASSWORD")
+                .or_else(|| std::env::var("KVSCF_REDIS_PASSWORD").ok())
+                .filter(|p| !p.is_empty()),
             token,
             this_host: env_or("KVSCF_HOST_NAME", &computer_name()),
         })
     }
 
-    fn url(&self) -> String {
+    /// How to connect — built as a struct rather than a `redis://` URL, deliberately.
+    ///
+    /// A URL would have to carry the password inline, and that costs twice: [`endpoint`] is
+    /// printed to stderr when the channel comes up, and a password containing `@`, `:`, `/`, `#`
+    /// or `%` needs percent-encoding that a hand-rolled `format!` gets wrong for exactly the
+    /// characters a generated password is likely to contain — silently presenting the wrong
+    /// credentials, or failing to parse and surfacing as an ordinary reconnect loop.
+    ///
+    /// `Client::open` takes `impl IntoConnectionInfo`, so none of that is necessary: the password
+    /// goes straight into the struct and never becomes part of a string anything prints.
+    ///
+    /// [`endpoint`]: Config::endpoint
+    fn connection_info(&self) -> redis::ConnectionInfo {
+        redis::ConnectionInfo {
+            addr: redis::ConnectionAddr::Tcp(self.redis_host.clone(), self.redis_port),
+            redis: redis::RedisConnectionInfo {
+                password: self.redis_password.clone(),
+                ..Default::default()
+            },
+        }
+    }
+
+    /// The endpoint for humans. **Display only, and deliberately password-free** — this string is
+    /// logged.
+    fn endpoint(&self) -> String {
         format!("redis://{}:{}", self.redis_host, self.redis_port)
     }
 
@@ -140,9 +183,13 @@ impl Channel {
                 .spawn(move || subscriber_loop(cfg))
                 .ok()?;
         }
+        // `auth=` reports only *whether* a password is configured. Saying so is worth a word: an
+        // endpoint that grew a `requirepass` while kvscf had none fails as a silent reconnect
+        // loop, and this line is what distinguishes that from an unreachable host.
         eprintln!(
-            "kvscf: remote channel up — {} (publish {}, focus {})",
-            cfg.url(),
+            "kvscf: remote channel up — {} auth={} (publish {}, focus {})",
+            cfg.endpoint(),
+            cfg.redis_password.is_some(),
             cfg.instances_key(),
             cfg.focus_channel()
         );
@@ -178,7 +225,7 @@ fn publisher_loop(cfg: Config, rx: Receiver<Snapshot>) {
     let apps_key = cfg.apps_key();
     let launcher_key = cfg.launcher_key();
     loop {
-        let client = match redis::Client::open(cfg.url()) {
+        let client = match redis::Client::open(cfg.connection_info()) {
             Ok(c) => c,
             Err(_) => {
                 thread::sleep(RECONNECT_BACKOFF);
@@ -241,7 +288,7 @@ fn publisher_loop(cfg: Config, rx: Receiver<Snapshot>) {
 fn subscriber_loop(cfg: Config) {
     let channel = cfg.focus_channel();
     loop {
-        let client = match redis::Client::open(cfg.url()) {
+        let client = match redis::Client::open(cfg.connection_info()) {
             Ok(c) => c,
             Err(_) => {
                 thread::sleep(RECONNECT_BACKOFF);
@@ -492,22 +539,25 @@ fn computer_name() -> String {
         .unwrap_or_else(|| DEFAULT_HOST_NAME.to_string())
 }
 
-/// Preferred token source: `HKCU\Software\kenhia\kvscf` value `KVSCF_TOKEN`. Robust to launch
-/// location (unlike a cwd/exe-dir `.env`) and to the boot-time HKCU `.DEFAULT` binding (via
-/// `userreg` — otherwise an early-launched kvscf would silently run with the channel off).
+/// Preferred secret source: a value under `HKCU\Software\kenhia\kvscf`. Robust to launch location
+/// (unlike a cwd/exe-dir `.env`) and to the boot-time HKCU `.DEFAULT` binding (via `userreg` —
+/// otherwise an early-launched kvscf would silently run with the channel off).
+///
+/// Used for `KVSCF_TOKEN` and `KVSCF_REDIS_PASSWORD`, which want identical resolution: the
+/// registry is the one place that survives however the exe was started.
 #[cfg(windows)]
-fn token_from_registry() -> Option<String> {
+fn registry_value(name: &str) -> Option<String> {
     crate::userreg::UserRoot::open()?
         .key()
         .open_subkey(r"Software\kenhia\kvscf")
         .ok()?
-        .get_value::<String, _>("KVSCF_TOKEN")
+        .get_value::<String, _>(name)
         .ok()
-        .filter(|t| !t.is_empty())
+        .filter(|v| !v.is_empty())
 }
 
 #[cfg(not(windows))]
-fn token_from_registry() -> Option<String> {
+fn registry_value(_name: &str) -> Option<String> {
     None
 }
 
@@ -517,6 +567,55 @@ mod tests {
     use kvscf_core::{App, Remote};
 
     const TOK: &str = "s3cret";
+
+    fn cfg_with_password(password: Option<&str>) -> Config {
+        Config {
+            redis_host: "192.168.1.73".into(),
+            redis_port: 6379,
+            redis_password: password.map(str::to_string),
+            token: TOK.into(),
+            this_host: "kwork".into(),
+        }
+    }
+
+    #[test]
+    fn no_password_configured_connects_unauthenticated() {
+        // cleo -> rpidash2:6380 is deliberately open on the trusted home LAN. Absent password
+        // must mean "no AUTH", never "no channel" — unlike the token.
+        let info = cfg_with_password(None).connection_info();
+        assert_eq!(info.redis.password, None);
+        assert_eq!(
+            info.addr,
+            redis::ConnectionAddr::Tcp("192.168.1.73".into(), 6379)
+        );
+    }
+
+    #[test]
+    fn a_configured_password_reaches_the_connection() {
+        let info = cfg_with_password(Some("hunter2")).connection_info();
+        assert_eq!(info.redis.password.as_deref(), Some("hunter2"));
+    }
+
+    #[test]
+    fn the_logged_endpoint_never_carries_the_password() {
+        // `endpoint()` is printed to stderr when the channel comes up. This is the regression
+        // test for the reason a `redis://:pw@host` URL was not used.
+        let cfg = cfg_with_password(Some("hunter2"));
+        let shown = cfg.endpoint();
+        assert!(!shown.contains("hunter2"), "password leaked into {shown:?}");
+        assert_eq!(shown, "redis://192.168.1.73:6379");
+    }
+
+    #[test]
+    fn a_url_hostile_password_survives_intact() {
+        // Every character here is structural in a URL — `@` ends the userinfo, `:` splits it,
+        // `/` ends the authority, `#` starts a fragment, `%` opens an escape. A hand-built
+        // `redis://:{pw}@host` would present the wrong credentials or fail to parse; the struct
+        // has no such failure mode, which is the whole argument for it.
+        let pw = "p@ss:w/rd#%";
+        let info = cfg_with_password(Some(pw)).connection_info();
+        assert_eq!(info.redis.password.as_deref(), Some(pw));
+    }
 
     #[test]
     fn focus_command_requires_matching_token() {
@@ -572,6 +671,7 @@ mod tests {
         let cfg = Config {
             redis_host: "h".into(),
             redis_port: 1,
+            redis_password: None,
             token: TOK.into(),
             this_host: "kwork".into(),
         };
@@ -630,6 +730,7 @@ mod tests {
         let cfg = Config {
             redis_host: "h".into(),
             redis_port: 1,
+            redis_password: None,
             token: TOK.into(),
             this_host: "cleo".into(),
         };
@@ -671,6 +772,7 @@ mod tests {
         let cfg = Config {
             redis_host: "h".into(),
             redis_port: 1,
+            redis_password: None,
             token: TOK.into(),
             this_host: "cleo".into(),
         };

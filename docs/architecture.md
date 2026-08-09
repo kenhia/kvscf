@@ -63,11 +63,28 @@ mutex enforces a single instance.
 
 The channel talks to the kdeskdash desk dashboard over the shared **"claude-feed" Redis** at
 `192.168.1.144:6380` (rpidash2; LAN, no Redis auth, ephemeral: 32mb / allkeys-lru / no persistence).
-Redis being open, the app-level **`KVSCF_TOKEN`** gates the only action — the focus command. The token
-is read from **`HKCU\Software\kenhia\kvscf` (preferred)** (via `userreg`, see below), falling back to
-env / a `.env` file (cwd or next to the exe) — the registry path is robust to where the exe is launched
+**Two gates, protecting different things** (sprint 018, WI #1147):
+
+- **`KVSCF_TOKEN`** — app-level, gating the only action, the focus command. **Mandatory**: without it
+  the channel stays off rather than run open.
+- **`KVSCF_REDIS_PASSWORD`** — transport-level Redis `requirepass`. **Optional**: rpidash2:6380 is
+  deliberately open on the trusted home LAN, and no password means no AUTH, not no channel.
+
+Both resolve identically — **`HKCU\Software\kenhia\kvscf` (preferred)** via `userreg`, falling back to
+env / a `.env` file (cwd or next to the exe). The registry path is robust to where the exe is launched
 from (a pinned launch from `C:\tools\bin` has no cwd/exe-dir `.env`). Endpoint host/port take env
 overrides, else the pinned rpidash2 defaults.
+
+The transport gate exists for the Launcher's kwork half: kwork publishes to rpidash3 over the LAN,
+where the tailnet ACLs covering every other homelab path do not reach.
+
+**The password is put into a `redis::ConnectionInfo`, never a `redis://:pw@host` URL.** Two
+independent reasons: the endpoint string is printed to stderr when the channel comes up, and a URL
+would need percent-encoding that a hand-rolled `format!` gets wrong for exactly the characters a
+generated password tends to contain — presenting the wrong credentials, or failing to parse and
+surfacing as an ordinary reconnect loop. `Client::open` takes `impl IntoConnectionInfo`, so the
+struct is free. `Config::endpoint()` stays display-only and password-free, with auth reported beside
+it as a boolean; a unit test asserts the password never appears in it.
 
 ```mermaid
 flowchart LR
