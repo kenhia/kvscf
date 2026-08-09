@@ -17,11 +17,13 @@
 //!
 //! Module map (decomposed from this file in sprint 013, WI #496):
 //! `rows` (the one row painter) · `theme` (colors) · `fonts` · `settings` · `probes`
-//! (headless verification flags) · `apps` / `winset` / `dock` (domain) · `single_instance` /
-//! `userreg` (Windows plumbing) · `remote` (kdeskdash channel, feature-gated).
+//! (headless verification flags) · `apps` / `launcher` / `winset` / `dock` (domain) ·
+//! `editor` (the Launcher editor's own window) · `single_instance` / `userreg` (Windows
+//! plumbing) · `remote` (kdeskdash channel, feature-gated).
 
 mod apps;
 mod dock;
+mod editor;
 mod fonts;
 mod launcher;
 mod probes;
@@ -147,10 +149,12 @@ struct KvscfApp {
     items: Vec<Instance>,
     edge: Vec<EdgeWindow>,
     apps: Vec<AppEntry>,
-    /// Configured Launcher buttons + their grid (sprint 016). Published, not drawn locally —
-    /// so in the `kvscf-local` build nothing reads it.
-    #[cfg_attr(not(feature = "remote"), allow(dead_code))]
+    /// Configured Launcher buttons + their grid (sprint 016). Published to the panel, and — since
+    /// sprint 017 — the occupancy the editor's grid picker draws, in both builds.
     launcher: launcher::LauncherSet,
+    /// The Launcher editor's window and form state (sprint 017). Its own viewport, opened from
+    /// the Controls drawer; `open` is false until then.
+    editor: editor::Editor,
     /// Persisted Code favorites (sprint 008) — folders that can be relaunched when closed.
     favorites: Vec<winset::SetEntry>,
     /// HWND → resolved folder entry, filled incrementally so we only read VS Code's
@@ -186,6 +190,7 @@ impl KvscfApp {
             edge: Vec::new(),
             apps: Vec::new(),
             launcher: launcher::LauncherSet::default(),
+            editor: editor::Editor::default(),
             favorites: winset::load_favorites(),
             uri_cache: HashMap::new(),
             tab: Tab::Code,
@@ -486,6 +491,19 @@ impl KvscfApp {
                     });
                     if changed {
                         self.save_settings();
+                    }
+                    ui.add_space(2.0);
+                    // The Launcher editor gets its own window rather than a tab: a nine-column
+                    // grid picker will not fit a 280px rail, still less a docked one.
+                    if ui
+                        .button("Launcher editor…")
+                        .on_hover_text(format!(
+                            "Define the panel's buttons ({} configured)",
+                            self.launcher.buttons.len()
+                        ))
+                        .clicked()
+                    {
+                        self.editor.open_new();
                     }
                     // Sets + Update Assist are VS-Code-specific — Code tab only.
                     if self.tab == Tab::Code {
@@ -793,6 +811,13 @@ impl eframe::App for KvscfApp {
             Tab::Apps => self.ui_apps_tab(ui, &mut actions),
         });
         self.apply_actions(actions);
+
+        // The Launcher editor's own window, when open. A write returns true, and re-scanning
+        // right away means the picker shows the button it just wrote instead of waiting out the
+        // 1-second reload — which is also what makes the panel update ~2s after an edit.
+        if self.editor.show(ctx, &self.launcher, &self.edge) {
+            self.refresh();
+        }
 
         // Keep polling / countdown ticking even when idle.
         ctx.request_repaint_after(Duration::from_millis(400));
