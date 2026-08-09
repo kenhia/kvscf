@@ -24,8 +24,8 @@ comms-free artifact must be built **in isolation**: `cargo build --release -p kv
 
 `kvscf-app` is organized as focused modules (sprint 013, WI #496): `rows` (the one row painter),
 `theme` (color/spacing tokens), `fonts`, `settings`, `probes` (headless verification flags),
-`apps` / `winset` / `dock` (domain), `single_instance` / `userreg` (Windows plumbing), and the
-feature-gated `remote`.
+`apps` / `launcher` / `winset` / `dock` (domain), `editor` (the Launcher editor's own window),
+`single_instance` / `userreg` (Windows plumbing), and the feature-gated `remote`.
 
 ## Core mechanics (`kvscf-core`)
 
@@ -184,9 +184,35 @@ commanded by `{token, button:<key>}` at precedence `button` > `app` > `id`. **Th
 `url` and no `target`** — the dashboard draws buttons and never learns where they go, which is what
 keeps work URLs on the work machine. See [kdeskdash-vscode-mode.md](kdeskdash-vscode-mode.md) §6.
 
-Two probes stand in for the not-yet-built editor: `--dump-launcher` resolves every button against
-the **live** window list (so a button silently degrading to the fallback is visible rather than
+Two probes cover it from the command line: `--dump-launcher` resolves every button against the
+**live** window list (so a button silently degrading to the fallback is visible rather than
 inferred), and `--fire-button <key>` runs the whole verb with no dashboard or Redis round trip.
+
+### The editor (`editor`, WI #1135)
+
+Opened from the Controls drawer, in **its own eframe viewport** — a nine-column grid picker will
+not fit a 280px rail, still less a docked borderless one. Fields above a live grid that shows what
+is already occupied and who owns it; a button is placed by selecting a free rectangle, not by
+typing coordinates.
+
+- **Overlaps are unexpressible, not reported.** `launcher::rect_is_free` gates what the picker will
+  commit, so `validate_layout` should never have anything to say about a button the editor wrote.
+  It stays the backstop for hand-edited registry entries.
+- **The target field is a dropdown of live named Edge windows**, plus "the current window". This is
+  the control that made a regex field unnecessary — see above. It stores the window's *name*.
+- **Colors are offered as kdeskdash palette swatches**, each drawn with the panel's own near-white
+  label on it so legibility is shown rather than asserted; a raw hex field remains. The panel's five
+  text-role colors are deliberately not offered.
+- **The panel's field ceilings are enforced here** (`KEY_MAX_BYTES` and friends, mirroring
+  kdeskdash's `KV_BTNKEY_MAX`): an over-long key is *rejected* by its parser, so writing one would
+  make a button that silently never appears.
+- **Test** fires the form as typed — no save, no dashboard. **Delete** removes the subkey rather
+  than blanking its values, and a rename is written-then-old-key-removed.
+- A save re-scans immediately, so the ~1s reload plus the ~1s republish put an edit on the panel in
+  about two seconds with nothing restarted.
+
+`cargo test -p kvscf-app -- --ignored` round-trips a button through the **real** registry (it places
+itself on a free cell and cleans up after itself); the gate itself never writes.
 
 ## Current-user registry (`userreg`)
 
