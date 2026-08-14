@@ -12,10 +12,15 @@ check-default:
     cargo build --all-targets
     cargo test
 
-# Pass 2 — the no-comms build in isolation (remote OFF). kvscf-local is excluded from
-# default-members on purpose: a whole-workspace build unifies features and would turn
-# `remote` on for the shared kvscf-app. Checking it alone is what keeps that path from
-# rotting, and --build-info is the assertion that it really is comms-free.
+# kvscf-local is excluded from default-members on purpose: a whole-workspace build unifies
+# features and would turn `remote` on for the shared kvscf-app. Checking it alone is what
+# keeps that path from rotting, and --build-info is the assertion that it really is
+# comms-free.
+#
+# (`just` shows only the LAST comment line above a recipe in `just --list`, so the prose
+# stays above the blank line and the doc comment below it.)
+
+# Pass 2 — the no-comms build in isolation (remote OFF)
 check-local:
     cargo clippy -p kvscf-local --all-targets -- -D warnings
     cargo build -p kvscf-local
