@@ -60,9 +60,10 @@ just check-local    # pass 2: kvscf-local alone, remote OFF, + the --build-info 
 just fmt            # cargo fmt --all
 ```
 
-`just` shells out through `sh`, which on this machine lives only in Git Bash's `usr/bin` — run it
-from Git Bash, not a bare PowerShell. Note also that plain `bash` on PATH here is the **WSL**
-launcher, and `python` is the MSIX Store stub.
+`just` shells out through `sh`, which on Windows lives only in Git for Windows' `usr/bin`. That
+directory was added to cleo's User PATH on 2026-08-15 (korg #1257), so a bare PowerShell works now;
+if you ever see *"could not find the shell `sh`"*, that PATH entry is what is missing. Note also
+that plain `bash` on PATH here is the **WSL** launcher, and `python` is the MSIX Store stub.
 
 Run the app with `cargo run -p kvscf` (full) or `cargo run -p kvscf-local` (no comms);
 `cargo run -p kvscf-core --bin kvscf-core -- list|focus <hwnd>` is the headless CLI.
