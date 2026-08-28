@@ -25,7 +25,8 @@ comms-free artifact must be built **in isolation**: `cargo build --release -p kv
 `kvscf-app` is organized as focused modules (sprint 013, WI #496): `rows` (the one row painter),
 `theme` (color/spacing tokens), `fonts`, `settings`, `probes` (headless verification flags),
 `apps` / `launcher` / `winset` / `dock` (domain), `editor` (the Launcher editor's own window),
-`single_instance` / `userreg` (Windows plumbing), and the feature-gated `remote`.
+`favedit` (the favorite editor's), `single_instance` / `userreg` (Windows plumbing), and the
+feature-gated `remote`.
 
 ## Core mechanics (`kvscf-core`)
 
@@ -110,9 +111,18 @@ The wire contract (keys, fields, payloads) is specified for the kdeskdash side i
 ## Window sets & Update Assist (`winset`)
 
 `kvscf-app::winset` resolves each open window to its **full folder URI** by matching (workspace basename
-+ remote host + build) against VS Code's own `workspaceStorage/*/workspace.json` (most-recent `mtime`
-wins). That URI is what gets relaunched — a local `code`/`code-insiders --folder-uri <uri>` (kvscf runs
-on cleo, so no krcmd round-trip).
++ remote host + build) against VS Code's own `workspaceStorage/*/workspace.json`. That URI is what gets
+relaunched — a local `code`/`code-insiders --folder-uri <uri>` (kvscf runs on cleo, so no krcmd
+round-trip).
+
+A window title carries only the folder's **leaf name**, so that match can hit two stored folders —
+`kubs0:/ai/klams` and `kubs0:/home/ken/src/ai/klams` both answer to `klams`. The tie-break is
+**`state.vscdb`'s mtime**, i.e. which folder was used most recently, falling back to `workspace.json`'s
+when it is absent. Not `workspace.json`'s own mtime: VS Code writes that file once at folder creation
+and never again, so it means *first opened* and the later-created duplicate wins forever — the sprint
+020 bug (#1682), where re-favoriting could never fix the entry because it re-ran the same resolution.
+Two same-named folders open **at once** remain ambiguous; nothing in the title separates them, which is
+part of why the favorite editor exists.
 
 - **Save / Restore** (WI #469): persist the resolved set as `%APPDATA%\kvscf\sets\last.json`; Restore
   relaunches it (staggered).
@@ -141,6 +151,24 @@ favorite)"** — `close_window` frees the RAM and the entry drops straight into 
 `workspaceStorage`). So the app keeps a **`uri_cache: HWND → SetEntry`**, pruned each scan and filled
 only when a window it hasn't seen appears — steady state costs nothing, and matching is by URI (not
 workspace basename, which would collide for two folders both named `src`).
+
+Both lists are sorted for display (#1685) and **deterministically**, not merely alphabetically: open
+windows by `kvscf_core::sort_instances` (workspace, then host, then hwnd), favorites by
+`winset::display_order` (label case-insensitively, then URI). The tiebreaks are what stop rows from
+swapping places between one-second refreshes when two of them share a name. `display_order` is the one
+comparator behind the dimmed section, the editor's list and the dashboard payload, so the three cannot
+drift apart; `favorites.json` keeps insertion order, since nothing indexes into it.
+
+### The favorite editor (`favedit`, #1683)
+
+A favorite stores what kvscf *resolved*, not anything typed — so when resolution was wrong the entry
+was both opaque and unfixable from inside the app. `favedit` is its own viewport window (same reasoning
+as the Launcher editor: a 280 px rail, often docked and borderless, cannot hold a full URI) showing the
+**decoded** URI beside the stored one and the derived workspace/host, since those are what matching and
+relaunch actually run on. It edits label, build and URI; Save replaces in place, and retargeting onto a
+folder another favorite already owns is refused. It does not create favorites — starring a window is
+still the only way one comes into being. Reached from **✎ Edit favorite…** on either favorite row kind,
+or the Controls drawer.
 
 Remote: instance rows gain `running` + `favorite`, and not-open favorites are appended as
 `running:false` rows whose **`id` is the folder URI** (no HWND exists). The focus command is unchanged
