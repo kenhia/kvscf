@@ -36,6 +36,19 @@ impl SetEntry {
     }
 }
 
+/// Display order for a list of favorites: by label, case-insensitively, then by URI.
+///
+/// The URI tiebreak is what makes it deterministic rather than merely sorted — two favorites can
+/// carry the same label and point at different folders, which is the whole subject of #1682. One
+/// function so the rail, the dashboard payload and the favorite editor cannot drift into three
+/// different orders.
+pub fn display_order(a: &SetEntry, b: &SetEntry) -> std::cmp::Ordering {
+    a.label
+        .to_lowercase()
+        .cmp(&b.label.to_lowercase())
+        .then_with(|| a.uri.cmp(&b.uri))
+}
+
 /// A folder URI VS Code has recorded, decoded enough to match against an open window.
 struct KnownUri {
     basename: String,
@@ -418,6 +431,53 @@ mod tests {
         assert_eq!(percent_decode("100%"), "100%");
         assert_eq!(percent_decode("%G1"), "%G1");
         assert_eq!(percent_decode("%2"), "%2");
+    }
+
+    // --- display order (#1685) ---
+
+    fn labelled(label: &str, uri: &str) -> SetEntry {
+        SetEntry {
+            app: App::Insiders,
+            uri: uri.into(),
+            label: label.into(),
+            workspace: label.into(),
+            host: None,
+        }
+    }
+
+    #[test]
+    fn display_order_is_alphabetical_ignoring_case() {
+        let mut v = [
+            labelled("korg (kai)", "a"),
+            labelled("ClaudeWorks", "b"),
+            labelled("kvscf", "c"),
+            labelled("k-homelab (kubs0)", "d"),
+        ];
+        v.sort_by(display_order);
+        let labels: Vec<&str> = v.iter().map(|e| e.label.as_str()).collect();
+        // Case-insensitive: ClaudeWorks sorts with the k's by letter, not ahead of them all
+        // because of its capital.
+        assert_eq!(
+            labels,
+            ["ClaudeWorks", "k-homelab (kubs0)", "korg (kai)", "kvscf"]
+        );
+    }
+
+    #[test]
+    fn display_order_breaks_label_ties_on_the_uri() {
+        // Two favorites can share a label and point at different folders — #1682's whole subject.
+        // Without the tiebreak their order would depend on which was starred first.
+        let a = labelled(
+            "klams (kubs0)",
+            "vscode-remote://ssh-remote%2Bkubs0/ai/klams",
+        );
+        let b = labelled(
+            "klams (kubs0)",
+            "vscode-remote://ssh-remote%2Bkubs0/home/ken/src/ai/klams",
+        );
+        assert_eq!(display_order(&a, &b), std::cmp::Ordering::Less);
+        assert_eq!(display_order(&b, &a), std::cmp::Ordering::Greater);
+        assert_eq!(display_order(&a, &a), std::cmp::Ordering::Equal);
     }
 
     // --- the same-leaf-name tie-break (#1682) ---

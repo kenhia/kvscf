@@ -226,8 +226,8 @@ impl KvscfApp {
 
     fn refresh(&mut self) {
         let (mut items, mut edge) = scan_all();
-        // VS Code: fastest-to-scan ordering — lowercased workspace name (hosts interleaved).
-        items.sort_by_key(|i| i.workspace.to_lowercase());
+        // VS Code: lowercased workspace name, hosts interleaved, ties broken deterministically.
+        kvscf_core::sort_instances(&mut items);
         // Edge: named windows first, then by label (both alphabetical).
         kvscf_core::sort_edge_windows(&mut edge);
         self.items = items;
@@ -281,12 +281,20 @@ impl KvscfApp {
     }
 
     /// Favorites not currently open — the dimmed, relaunchable rows.
+    ///
+    /// Sorted here rather than at the row loop so the rail section and the kdeskdash publish get
+    /// the same order from one place, the way `items` is sorted before publishing. Storage order
+    /// in `favorites.json` is left alone: nothing indexes into it (identity is `same_target`), and
+    /// rewriting the file to reorder it would be churn for no gain.
     fn dimmed_favorites(&self) -> Vec<winset::SetEntry> {
-        self.favorites
+        let mut out: Vec<winset::SetEntry> = self
+            .favorites
             .iter()
             .filter(|f| !self.uri_cache.values().any(|e| e.same_target(f)))
             .cloned()
-            .collect()
+            .collect();
+        out.sort_by(winset::display_order);
+        out
     }
 
     /// Add `entry` to favorites (if new) and persist.

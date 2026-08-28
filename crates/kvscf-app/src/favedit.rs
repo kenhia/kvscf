@@ -154,10 +154,14 @@ impl FavEditor {
             return;
         }
         ui.separator();
+        // Sorted for display only — the same order the rail shows, from the same comparator.
+        // Sorting the caller's Vec would reorder storage for a merely cosmetic reason.
+        let mut shown: Vec<&SetEntry> = favorites.iter().collect();
+        shown.sort_by(|a, b| winset::display_order(a, b));
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                for fav in favorites {
+                for fav in shown {
                     let selected = self
                         .editing
                         .as_ref()
@@ -347,9 +351,10 @@ impl FavEditor {
 
 /// Write `candidate` over the favorite `original` identifies.
 ///
-/// Replaced **in place**, so a corrected favorite keeps its position in the rail instead of
-/// jumping to the bottom — the repair should be invisible in the list, since to Ken it is the
-/// same favorite as before, now pointing where he meant.
+/// Replaced **in place** rather than removed-and-appended: it is the same favorite, now pointing
+/// where Ken meant, so it should stay one row in `favorites.json` rather than churning to the end
+/// of the file on every correction. Where it lands in the rail is decided by
+/// [`winset::display_order`], not by this position.
 fn apply_save(favorites: &mut Vec<SetEntry>, original: &SetEntry, candidate: SetEntry) {
     match favorites.iter().position(|f| f.same_target(original)) {
         Some(i) => favorites[i] = candidate,

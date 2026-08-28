@@ -108,13 +108,62 @@ Not verified by clicking: the GUI wiring (context menu → editor → Save). `co
 resolve `kvscf` — it has no Start-menu entry, so a dev build is unreachable to it. The headless
 tests drive the real widget tree, but the menu item itself is eyeball-only.
 
+## Sorting (#1685, added mid-sprint)
+
+Ken, once the editor had repaired his klams favorite: *"sort the names alphabetically (ignore case)
+in the Code list … and in the favorite editor."*
+
+Surveying first changed the shape of it. The **open windows were already sorted** —
+`items.sort_by_key(|i| i.workspace.to_lowercase())` — so two of the three lists needed the sort and
+the third needed something subtler. `sort_by_key` is *stable*, so the two `klams` windows fell back
+to scan order, which follows Z-order: the rows could swap places between one-second refreshes as
+Ken used them. Sorted, but not deterministic — and a row that moves under the pointer is worse than
+one in the wrong order.
+
+So: `kvscf_core::sort_instances` (next to the existing `sort_edge_windows`, making the two lines in
+`refresh` symmetric) sorts by workspace, then host, then hwnd. And `winset::display_order` — label
+case-insensitively, then URI — is the one comparator behind the dimmed rail section, the kdeskdash
+payload and the editor's list, so the three cannot drift into three different orders. Labels tie
+more often than you'd think; the URI tiebreak is the same #1682 lesson.
+
+Sorted at **display** time. `favorites.json` keeps its insertion order: nothing indexes into it
+(identity is `same_target`), so reordering the file would be churn with a write behind it.
+
+## The %APPDATA% trap this sprint walked into
+
+Verifying Ken's repair, `favorites.json` read from the agent's own PowerShell still showed
+`/ai/klams` — while Ken had just watched the fix work. Read over `ssh cleo`, the same path showed
+the corrected URI.
+
+Claude Code's shell on cleo runs inside the MSIX package container, so `%APPDATA%` reads are
+shadowed by
+`C:\Users\kenhi\AppData\Local\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\` — which held a
+`kvscf\favorites.json` frozen on 2026-07-19. Ken's global CLAUDE.md documents this for configs
+*written* from inside the app; the new wrinkle is that **a GUI app launched from the agent's shell
+inherits the container**, so a kvscf started that way would show Ken a July favorites list and
+write his edits somewhere his real app never reads.
+
+Consequences, corrected:
+
+- The earlier "favorites.json intact, 1193 bytes both" check compared shadow to shadow. It proved
+  nothing about the real file. (The real file was fine — confirmed over ssh.)
+- `.scratch/favorites.backup.json` was a copy of the *shadow*. Re-taken from the real file over ssh.
+- Deploy and relaunch go through `ssh cleo`, not the agent's shell.
+- Reads that fall through are still fine: no shadow exists for `workspaceStorage`, so the
+  `--dump-set` verification above read the real thing. Only paths something has written from inside
+  the container are shadowed — which is exactly why this is easy to miss.
+
 ## Follow-ups
 
-- **The poisoned entry is still in `favorites.json`** (`klams (kubs0)` → `ssh-remote%2Bkubs0/ai/klams`).
-  Left for Ken to fix with the new editor rather than hand-edited behind his back — repairing it is
-  the tool's first real job. Backup at `.scratch/favorites.backup.json`.
+- ~~The poisoned entry is still in `favorites.json`~~ — **done.** Ken deployed the build and
+  repaired it with the new editor; `klams (kubs0)` now stores
+  `ssh-remote%2Bkubs0/home/ken/src/ai/klams` and opens the folder he wanted. Confirmed over ssh.
 - Proposal korg:1684 suggested deleting the `/ai/klams` workspaceStorage dir as optional cleanup.
   **Don't** — the folder exists and is klams's live runtime data, not a stale leftover. That was a
   guess written before checking kubs0.
 - Deploying: kvscf has no `just deploy`; the installed binary is `C:\tools\bin\kvscf.exe` and gets
-  a manual copy.
+  a manual copy — **do it over `ssh cleo`**, per the virtualization note above. A `just deploy`
+  recipe that encodes that would be worth an XS someday.
+- The `.claude/skills/` pair and `docs/` don't mention the favorite editor yet. Not urgent — it is
+  discoverable from the context menu — but `docs/architecture.md`'s module map should gain
+  `favedit` next time that file is touched.
