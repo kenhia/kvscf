@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use kvscf_core::{scan, App, Instance};
@@ -41,7 +41,8 @@ struct KnownUri {
     basename: String,
     host: Option<String>,
     uri: String,
-    mtime: SystemTime,
+    /// When this folder was last open — the tie-break between two folders sharing a leaf name.
+    used_at: SystemTime,
 }
 
 fn appdata() -> Option<PathBuf> {
@@ -85,7 +86,8 @@ fn known_uris(app: App) -> Vec<KnownUri> {
         return out;
     };
     for entry in read.flatten() {
-        let wj = entry.path().join("workspace.json");
+        let dir = entry.path();
+        let wj = dir.join("workspace.json");
         let Ok(text) = fs::read_to_string(&wj) else {
             continue;
         };
@@ -99,24 +101,68 @@ fn known_uris(app: App) -> Vec<KnownUri> {
         let Some(uri) = uri else {
             continue;
         };
-        let mtime = wj
-            .metadata()
-            .and_then(|m| m.modified())
-            .unwrap_or(SystemTime::UNIX_EPOCH);
         if let Some((basename, host)) = parse_uri(uri) {
             out.push(KnownUri {
                 basename,
                 host,
                 uri: uri.to_string(),
-                mtime,
+                used_at: last_used(&dir),
             });
         }
     }
     out
 }
 
+/// When a `workspaceStorage` folder was last *used* — the recency signal that tells two folders
+/// sharing a leaf name apart (kvscf #1682).
+///
+/// **Not `workspace.json`'s mtime.** VS Code writes that file once, when it creates the storage
+/// folder, and never touches it again: its mtime means "first opened", so of two same-named
+/// folders whichever was *created* later wins forever. That is what pinned the open
+/// `klams (kubs0)` window to `/ai/klams` no matter how often it was re-favorited — its storage
+/// folder was created eight days after the right one's, in May, and that never changes.
+///
+/// `state.vscdb` is rewritten as the window is *used*, which is the signal we actually want. It
+/// is not a heartbeat — two idle windows can both sit unflushed for hours — so it orders windows
+/// by recency of use, not of existence. That is enough to pick the right folder whenever only one
+/// of a same-named pair is in play, which is the case this fixes. Fall back to `workspace.json`
+/// only when it is absent (a folder VS Code recorded but never opened).
+fn last_used(storage_dir: &Path) -> SystemTime {
+    let mtime = |name: &str| {
+        storage_dir
+            .join(name)
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+    };
+    mtime("state.vscdb")
+        .or_else(|| mtime("workspace.json"))
+        .unwrap_or(SystemTime::UNIX_EPOCH)
+}
+
+/// The stored folder an open window belongs to: same leaf name, same host, most recently used.
+///
+/// A window title carries only the folder's leaf name, so two folders that end in the same name
+/// on the same host are indistinguishable from the title alone and recency is the only tie-break
+/// available. That makes the *right* recency stamp load-bearing — see [`last_used`].
+///
+/// Known limit, deliberately not solved: two same-named folders open **at once** collapse to
+/// whichever flushed last, so both rows resolve to one URI (live on cleo — `/ai/klams`, klams's
+/// runtime data dir, and `~/src/ai/klams`, its repo). Nothing in the title separates them, so
+/// fixing it needs an identity the window doesn't carry; a favorite made from the wrong one of
+/// the pair is repairable by hand in the favorite editor.
+fn best_match<'a>(
+    uris: &'a [KnownUri],
+    workspace: &str,
+    host: Option<&str>,
+) -> Option<&'a KnownUri> {
+    uris.iter()
+        .filter(|u| u.basename == workspace && u.host.as_deref() == host)
+        .max_by_key(|u| u.used_at)
+}
+
 /// Extract `(basename, host)` from a stored folder URI. `host` is `None` for local folders.
-fn parse_uri(uri: &str) -> Option<(String, Option<String>)> {
+pub fn parse_uri(uri: &str) -> Option<(String, Option<String>)> {
     let decoded = percent_decode(uri);
     if let Some(rest) = decoded.strip_prefix("vscode-remote://") {
         // rest = "ssh-remote+[user@]host/abs/path"
@@ -139,7 +185,8 @@ fn parse_uri(uri: &str) -> Option<(String, Option<String>)> {
     }
 }
 
-fn percent_decode(s: &str) -> String {
+/// Decode a stored URI for display — `ssh-remote%2Bkubs0` is unreadable as an identity to check.
+pub fn percent_decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -172,11 +219,7 @@ pub fn resolve_open_set(instances: &[Instance]) -> (Vec<(Instance, SetEntry)>, V
             .entry(storage_dir_name(inst.app))
             .or_insert_with(|| known_uris(inst.app));
         let host = inst.remote.host();
-        let best = uris
-            .iter()
-            .filter(|u| u.basename == inst.workspace && u.host.as_deref() == host)
-            .max_by_key(|u| u.mtime);
-        match best {
+        match best_match(uris, &inst.workspace, host) {
             Some(u) => {
                 let entry = SetEntry {
                     app: inst.app,
@@ -375,6 +418,126 @@ mod tests {
         assert_eq!(percent_decode("100%"), "100%");
         assert_eq!(percent_decode("%G1"), "%G1");
         assert_eq!(percent_decode("%2"), "%2");
+    }
+
+    // --- the same-leaf-name tie-break (#1682) ---
+
+    /// A scratch dir of our own, so these can run alongside each other.
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join("kvscf-winset-test").join(name);
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Write `name` into `dir` with a fixed mtime, the way a storage folder carries one.
+    fn stamped(dir: &Path, name: &str, at: SystemTime) {
+        let path = dir.join(name);
+        fs::write(&path, "{}").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(at)
+            .unwrap();
+    }
+
+    fn known(basename: &str, host: Option<&str>, uri: &str, used_at: SystemTime) -> KnownUri {
+        KnownUri {
+            basename: basename.into(),
+            host: host.map(str::to_string),
+            uri: uri.into(),
+            used_at,
+        }
+    }
+
+    #[test]
+    fn last_used_reads_state_vscdb_not_workspace_json() {
+        // The shape that caused #1682: workspace.json is the *newer* file, and following it is
+        // exactly the mistake — state.vscdb is when the folder was actually last open.
+        let dir = scratch("prefers-state");
+        let old = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+        let new = SystemTime::UNIX_EPOCH + Duration::from_secs(9_000);
+        stamped(&dir, "workspace.json", new);
+        stamped(&dir, "state.vscdb", old);
+        assert_eq!(last_used(&dir), old);
+    }
+
+    #[test]
+    fn last_used_falls_back_to_workspace_json() {
+        // A folder VS Code recorded but never opened has no state.vscdb at all.
+        let dir = scratch("falls-back");
+        let at = SystemTime::UNIX_EPOCH + Duration::from_secs(4_200);
+        stamped(&dir, "workspace.json", at);
+        assert_eq!(last_used(&dir), at);
+    }
+
+    #[test]
+    fn last_used_of_an_empty_dir_loses_every_tie_break() {
+        assert_eq!(last_used(&scratch("empty")), SystemTime::UNIX_EPOCH);
+    }
+
+    #[test]
+    fn duplicate_leaf_names_resolve_to_the_recently_used_one() {
+        // The live case: two `klams` folders on kubs0. The one whose window is actually open —
+        // ~/src/ai/klams — must win, regardless of which storage folder VS Code created first.
+        let older = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+        let newer = SystemTime::UNIX_EPOCH + Duration::from_secs(2_000);
+        let uris = vec![
+            known(
+                "klams",
+                Some("kubs0"),
+                "vscode-remote://ssh-remote%2Bkubs0/ai/klams",
+                older,
+            ),
+            known(
+                "klams",
+                Some("kubs0"),
+                "vscode-remote://ssh-remote%2Bkubs0/home/ken/src/ai/klams",
+                newer,
+            ),
+        ];
+        let best = best_match(&uris, "klams", Some("kubs0")).expect("a match");
+        assert_eq!(
+            best.uri,
+            "vscode-remote://ssh-remote%2Bkubs0/home/ken/src/ai/klams"
+        );
+    }
+
+    #[test]
+    fn a_same_named_folder_on_another_host_is_never_the_match() {
+        // kai's `klams` is a different project entirely; recency must not reach across hosts.
+        let older = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+        let newer = SystemTime::UNIX_EPOCH + Duration::from_secs(2_000);
+        let uris = vec![
+            known(
+                "klams",
+                Some("kubs0"),
+                "vscode-remote://ssh-remote%2Bkubs0/home/ken/src/ai/klams",
+                older,
+            ),
+            known(
+                "klams",
+                Some("kai"),
+                "vscode-remote://ssh-remote%2Bkai/home/ken/src/ai/klams",
+                newer,
+            ),
+        ];
+        let best = best_match(&uris, "klams", Some("kubs0")).expect("a match");
+        assert_eq!(best.host.as_deref(), Some("kubs0"));
+        // …and a local window never matches a remote folder of the same name.
+        assert!(best_match(&uris, "klams", None).is_none());
+    }
+
+    #[test]
+    fn an_unknown_workspace_has_no_match() {
+        let uris = vec![known(
+            "klams",
+            Some("kubs0"),
+            "vscode-remote://ssh-remote%2Bkubs0/ai/klams",
+            SystemTime::UNIX_EPOCH,
+        )];
+        assert!(best_match(&uris, "korg", Some("kubs0")).is_none());
     }
 
     // --- persisted-entry roundtrip: workspace/host re-derived from the URI on load ---
