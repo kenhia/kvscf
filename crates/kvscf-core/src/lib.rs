@@ -212,6 +212,23 @@ pub struct EdgeWindow {
     pub z_index: usize,
 }
 
+/// Display order for VS Code windows: alphabetical by workspace name, case-insensitively, with
+/// hosts interleaved (korg kvscf #1685).
+///
+/// Host and hwnd break ties so the order is *deterministic*, not merely sorted. Two windows can
+/// share a workspace name — two folders both leaf-named `klams`, the case behind #1682 — and
+/// leaving them to a stable sort would keep them in scan order, which follows Z-order and so
+/// reshuffles the rows between one-second refreshes as windows are used.
+pub fn sort_instances(items: &mut [Instance]) {
+    items.sort_by(|a, b| {
+        a.workspace
+            .to_lowercase()
+            .cmp(&b.workspace.to_lowercase())
+            .then_with(|| a.remote.host().cmp(&b.remote.host()))
+            .then_with(|| a.hwnd.cmp(&b.hwnd))
+    });
+}
+
 /// Display order for Edge windows: named windows first, then alphabetical by label (both groups).
 pub fn sort_edge_windows(windows: &mut [EdgeWindow]) {
     windows.sort_by(|a, b| {
@@ -248,6 +265,66 @@ pub fn pick_edge_target(windows: &[EdgeWindow], named: Option<&str>) -> Option<i
     }
     // z_index 0 == most-recently-active, so the minimum is the top-Z window.
     windows.iter().min_by_key(|w| w.z_index).map(|w| w.hwnd)
+}
+
+#[cfg(test)]
+mod sort_tests {
+    use super::*;
+
+    fn inst(hwnd: i64, workspace: &str, remote: Remote, z: usize) -> Instance {
+        Instance {
+            hwnd,
+            app: App::Insiders,
+            workspace: workspace.into(),
+            remote,
+            active_file: None,
+            z_index: z,
+        }
+    }
+
+    #[test]
+    fn instances_sort_alphabetically_ignoring_case() {
+        let mut items = vec![
+            inst(1, "korg", Remote::Ssh("kai".into()), 0),
+            inst(2, "ClaudeWorks", Remote::Local, 1),
+            inst(3, "kvscf", Remote::Local, 2),
+            inst(4, "k-homelab", Remote::Ssh("kubs0".into()), 3),
+        ];
+        sort_instances(&mut items);
+        let names: Vec<&str> = items.iter().map(|i| i.workspace.as_str()).collect();
+        // ClaudeWorks sorts by letter, not ahead of everything because of its capital C.
+        assert_eq!(names, ["ClaudeWorks", "k-homelab", "korg", "kvscf"]);
+    }
+
+    #[test]
+    fn same_named_windows_keep_a_stable_order_as_z_order_churns() {
+        // Ken's two `klams` windows. Scan order follows Z-order, so it changes as he uses them;
+        // the rows must not swap places underneath the pointer between one-second refreshes.
+        let a = inst(100, "klams", Remote::Ssh("kubs0".into()), 0);
+        let b = inst(200, "klams", Remote::Ssh("kubs0".into()), 1);
+
+        let mut one = vec![a.clone(), b.clone()];
+        sort_instances(&mut one);
+        // …and again with the scan order reversed, as a focus switch would deliver it.
+        let mut two = vec![b, a];
+        sort_instances(&mut two);
+
+        let ids = |v: &[Instance]| v.iter().map(|i| i.hwnd).collect::<Vec<_>>();
+        assert_eq!(ids(&one), [100, 200]);
+        assert_eq!(ids(&one), ids(&two), "order must not depend on scan order");
+    }
+
+    #[test]
+    fn a_shared_name_on_two_hosts_orders_by_host() {
+        let mut items = vec![
+            inst(1, "klams", Remote::Ssh("kubs0".into()), 0),
+            inst(2, "klams", Remote::Ssh("kai".into()), 1),
+            inst(3, "klams", Remote::Local, 2),
+        ];
+        sort_instances(&mut items);
+        // Local (no host) sorts first, then kai, then kubs0.
+        assert_eq!(items.iter().map(|i| i.hwnd).collect::<Vec<_>>(), [3, 2, 1]);
+    }
 }
 
 #[cfg(test)]

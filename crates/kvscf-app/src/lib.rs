@@ -18,12 +18,14 @@
 //! Module map (decomposed from this file in sprint 013, WI #496):
 //! `rows` (the one row painter) · `theme` (colors) · `fonts` · `settings` · `probes`
 //! (headless verification flags) · `apps` / `launcher` / `winset` / `dock` (domain) ·
-//! `editor` (the Launcher editor's own window) · `single_instance` / `userreg` (Windows
-//! plumbing) · `remote` (kdeskdash channel, feature-gated).
+//! `editor` (the Launcher editor's own window) · `favedit` (the favorite editor's) ·
+//! `single_instance` / `userreg` (Windows plumbing) · `remote` (kdeskdash channel,
+//! feature-gated).
 
 mod apps;
 mod dock;
 mod editor;
+mod favedit;
 mod fonts;
 mod launcher;
 mod probes;
@@ -77,6 +79,8 @@ enum FavAction {
     Add(winset::SetEntry),
     Remove(winset::SetEntry),
     Close(i64),
+    /// Open the favorite editor on this entry — "what did starring this actually store?".
+    Edit(winset::SetEntry),
 }
 
 /// Everything a frame's row clicks can ask for, applied after the tab render releases its
@@ -155,6 +159,9 @@ struct KvscfApp {
     /// The Launcher editor's window and form state (sprint 017). Its own viewport, opened from
     /// the Controls drawer; `open` is false until then.
     editor: editor::Editor,
+    /// The favorite editor's window (sprint 020) — opened from a favorite's context menu, or
+    /// from the Controls drawer with nothing selected.
+    favedit: favedit::FavEditor,
     /// Persisted Code favorites (sprint 008) — folders that can be relaunched when closed.
     favorites: Vec<winset::SetEntry>,
     /// HWND → resolved folder entry, filled incrementally so we only read VS Code's
@@ -191,6 +198,7 @@ impl KvscfApp {
             apps: Vec::new(),
             launcher: launcher::LauncherSet::default(),
             editor: editor::Editor::default(),
+            favedit: favedit::FavEditor::default(),
             favorites: winset::load_favorites(),
             uri_cache: HashMap::new(),
             tab: Tab::Code,
@@ -218,8 +226,8 @@ impl KvscfApp {
 
     fn refresh(&mut self) {
         let (mut items, mut edge) = scan_all();
-        // VS Code: fastest-to-scan ordering — lowercased workspace name (hosts interleaved).
-        items.sort_by_key(|i| i.workspace.to_lowercase());
+        // VS Code: lowercased workspace name, hosts interleaved, ties broken deterministically.
+        kvscf_core::sort_instances(&mut items);
         // Edge: named windows first, then by label (both alphabetical).
         kvscf_core::sort_edge_windows(&mut edge);
         self.items = items;
@@ -273,12 +281,20 @@ impl KvscfApp {
     }
 
     /// Favorites not currently open — the dimmed, relaunchable rows.
+    ///
+    /// Sorted here rather than at the row loop so the rail section and the kdeskdash publish get
+    /// the same order from one place, the way `items` is sorted before publishing. Storage order
+    /// in `favorites.json` is left alone: nothing indexes into it (identity is `same_target`), and
+    /// rewriting the file to reorder it would be churn for no gain.
     fn dimmed_favorites(&self) -> Vec<winset::SetEntry> {
-        self.favorites
+        let mut out: Vec<winset::SetEntry> = self
+            .favorites
             .iter()
             .filter(|f| !self.uri_cache.values().any(|e| e.same_target(f)))
             .cloned()
-            .collect()
+            .collect();
+        out.sort_by(winset::display_order);
+        out
     }
 
     /// Add `entry` to favorites (if new) and persist.
@@ -505,8 +521,18 @@ impl KvscfApp {
                     {
                         self.editor.open_new();
                     }
-                    // Sets + Update Assist are VS-Code-specific — Code tab only.
+                    // Sets, Update Assist and favorites are VS-Code-specific — Code tab only.
                     if self.tab == Tab::Code {
+                        if ui
+                            .button("Favorite editor…")
+                            .on_hover_text(format!(
+                                "See and fix what each favorite stores ({} saved)",
+                                self.favorites.len()
+                            ))
+                            .clicked()
+                        {
+                            self.favedit.open_list();
+                        }
                         ui.separator();
                         self.ui_sets_section(ui);
                     }
@@ -631,7 +657,15 @@ impl KvscfApp {
                         }
                         Some(e) if favorited => {
                             if ui.button("☆ Unfavorite").clicked() {
-                                actions.fav_action = Some(FavAction::Remove(e));
+                                actions.fav_action = Some(FavAction::Remove(e.clone()));
+                                ui.close_menu();
+                            }
+                            if ui
+                                .button("✎ Edit favorite…")
+                                .on_hover_text("See and fix the folder this favorite stores")
+                                .clicked()
+                            {
+                                actions.fav_action = Some(FavAction::Edit(e));
                                 ui.close_menu();
                             }
                             if ui.button("Close (keep favorite)").clicked() {
@@ -662,6 +696,14 @@ impl KvscfApp {
                         resp.context_menu(|ui| {
                             if ui.button("☆ Unfavorite").clicked() {
                                 actions.fav_action = Some(FavAction::Remove(fav.clone()));
+                                ui.close_menu();
+                            }
+                            if ui
+                                .button("✎ Edit favorite…")
+                                .on_hover_text("See and fix the folder this favorite stores")
+                                .clicked()
+                            {
+                                actions.fav_action = Some(FavAction::Edit(fav.clone()));
                                 ui.close_menu();
                             }
                         });
@@ -763,6 +805,7 @@ impl KvscfApp {
         match actions.fav_action {
             Some(FavAction::Add(e)) => self.add_favorite(e),
             Some(FavAction::Remove(e)) => self.remove_favorite(&e),
+            Some(FavAction::Edit(e)) => self.favedit.open_on(&e),
             Some(FavAction::Close(hwnd)) => {
                 close_window(hwnd);
             }
@@ -816,6 +859,14 @@ impl eframe::App for KvscfApp {
         // right away means the picker shows the button it just wrote instead of waiting out the
         // 1-second reload — which is also what makes the panel update ~2s after an edit.
         if self.editor.show(ctx, &self.launcher, &self.edge) {
+            self.refresh();
+        }
+
+        // The favorite editor's own window. Unlike the Launcher editor it mutates the list kvscf
+        // is already holding, so persisting is ours to do — and the refresh republishes the
+        // starred/dimmed split a correction has just changed.
+        if self.favedit.show(ctx, &mut self.favorites) {
+            self.persist_favorites();
             self.refresh();
         }
 
