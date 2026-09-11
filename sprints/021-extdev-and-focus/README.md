@@ -169,15 +169,38 @@ all three move together:
 | `workspace` | `[Extension Development Host] Visual Studio Code` | `Extension Development Host` |
 | `active_file` | `"Insiders"` | `null` |
 
-So **kdeskdash's rail renders a dev host differently from today**, with no kdeskdash change and
-none required: no field was added or removed, and `active_file: null` is already the normal shape for
-a window with no file open (`no_active_file` has been a parse case since sprint 001). The panel reads
-a better label than it did, which is the point of #627 — but it is a visible change on Ken's panel
-produced by a slice whose first wrap-up said it had no cross-repo effect. Structurally true, in
-effect misleading; corrected here.
+### `active_file: "Insiders"` was a fabrication, and that is the real find
 
-What is still *not* possible on the panel is telling a dev host apart by colour, since the flag
-itself does not travel. That is korg #2365.
+The bottom row is not a formatting improvement. `Insiders` is **VS Code's own edition name**, split off
+the title at the ` - ` and published to kdeskdash as *the name of an open file*. Every dev-host row on
+Ken's panel has been claiming a file called "Insiders" is open, for as long as he has been building
+korg-vs.
+
+Nothing downstream could have caught it. `active_file` is a free-text string that is legitimately
+`null` or truncated, so `"Insiders"` is a perfectly well-formed value — there is no shape check, no
+schema violation, and no way for a reader to tell an invented filename from a real one. It went
+unfiled because nobody was looking at dev-host rows, which is also why #627 existed at all. So this
+sprint fixes a second, unreported defect as a side effect of the first, and the regression test for it
+is on the wire payload (`a_dev_host_is_flagged_on_the_wire_and_claims_no_open_file`) rather than only
+on the parser, because the parser is not where it was visible.
+
+The label change is the cosmetic half. This is the half worth remembering: **a published field was
+carrying a value derived from nothing, in a type that made it indistinguishable from the truth.**
+
+It also corrects this sprint's own first wrap-up, which said the slice had no cross-repo effect.
+Structurally true — no field added or removed — and as a summary of the effect, misleading.
+
+### The flag now travels too
+
+Originally left out as a cross-repo item. Reconsidered at review under Ken's standing ruling that
+trivial things get fixed in the sprint that found them rather than filed: publishing the flag is two
+lines **in this repo**, it is additive and back-compatible, and nothing consumes it yet — and doing it
+here turns a two-repo item into a one-repo one. `ext_dev_host` is now on every instance row
+(always `false` on a dimmed favorite, which cannot be a dev host), documented in
+`docs/kdeskdash-vscode-mode.md` with the pre-021 shape noted for anyone holding cached rows.
+
+What is left is kdeskdash colouring those rows from a flag kvscf already publishes — **korg #2365**,
+now a kdeskdash-only item with no kvscf dependency.
 
 ## Cross-slice state (korg:2230, krot, same host)
 
@@ -194,10 +217,8 @@ itself does not travel. That is korg #2365.
 - **Ordinary folderless windows** still read as workspace `Visual Studio Code` (characterization
   test `an_ordinary_folderless_window_keeps_its_historical_parse`). Decide whether those should be
   relabelled or dropped from the rail.
-- **The dashboard cannot tell a dev host apart — but its label already changed.** `ext_dev_host` is
-  not on the `kvscf:instances:<host>` wire, so kdeskdash cannot *style* one. It does, however, now
-  receive a different label for it (see "This slice is visible on the panel" above). Putting the flag
-  on the wire needs a contract change plus a kdeskdash change — its own slice. Filed as korg #2365.
+- **kdeskdash should colour dev-host rows** from the `ext_dev_host` flag this sprint now publishes —
+  **korg #2365**, kdeskdash-only, no kvscf work needed first.
 - **Stable VS Code on cleo has no folder-first `window.title`** — its window reads `settings.json`
   where the project name should be (visible in the CLI dumps above). That is the documented Path-1
   setup step from the `kvscf-window-title` skill, not a bug, but it is live on Ken's machine.

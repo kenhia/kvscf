@@ -363,6 +363,10 @@ fn build_instances_json(
                 "z_index": i.z_index,
                 "running": true,
                 "favorite": favorited.contains(&i.hwnd),
+                // WI #627. Published on both row kinds so a consumer can read one field path
+                // unconditionally; it is always false on a dimmed favorite, which cannot be a dev
+                // host (there is no folder URI to favorite).
+                "ext_dev_host": i.ext_dev_host,
             })
         })
         .collect();
@@ -379,6 +383,7 @@ fn build_instances_json(
             "z_index": serde_json::Value::Null,
             "running": false,
             "favorite": true,
+            "ext_dev_host": false,
         })
     }));
 
@@ -766,6 +771,52 @@ mod tests {
         assert_eq!(arr[1]["favorite"], true);
         assert_eq!(arr[1]["workspace"], "kyac");
         assert_eq!(arr[1]["remote_host"], "kai");
+        // Present on both row kinds so a consumer reads one field path (WI #627).
+        assert_eq!(arr[0]["ext_dev_host"], false);
+        assert_eq!(arr[1]["ext_dev_host"], false);
+    }
+
+    /// A dev host on the wire (WI #627), built from the real title rather than a hand-set flag, so
+    /// this covers the parse and the payload together.
+    ///
+    /// It also pins the **bug** this fixed: the same window used to publish
+    /// `active_file: "Insiders"` — VS Code's own edition name, split off the title at the ` - ` and
+    /// handed to kdeskdash as the name of an open file. Nothing downstream could tell it was
+    /// invented, so the regression has to be caught here.
+    #[test]
+    fn a_dev_host_is_flagged_on_the_wire_and_claims_no_open_file() {
+        let cfg = Config {
+            redis_host: "h".into(),
+            redis_port: 1,
+            redis_password: None,
+            token: TOK.into(),
+            this_host: "cleo".into(),
+        };
+        let parsed =
+            kvscf_core::parse_title("[Extension Development Host] Visual Studio Code - Insiders")
+                .expect("the live dev-host title must parse");
+        let inst = Instance {
+            hwnd: 7,
+            app: App::Insiders,
+            workspace: parsed.workspace,
+            remote: parsed.remote,
+            active_file: parsed.active_file,
+            z_index: 0,
+            ext_dev_host: parsed.ext_dev_host,
+        };
+        let v: serde_json::Value =
+            serde_json::from_str(&build_instances_json(&cfg, &[inst], &HashSet::new(), &[]))
+                .unwrap();
+        let row = &v["instances"][0];
+        assert_eq!(row["ext_dev_host"], true);
+        assert_eq!(row["workspace"], "Extension Development Host");
+        assert_eq!(row["label"], "Extension Development Host");
+        // The fabrication: this was "Insiders" before sprint 021.
+        assert!(
+            row["active_file"].is_null(),
+            "a dev host with no folder open must not publish an active file, got {}",
+            row["active_file"]
+        );
     }
 
     #[test]
