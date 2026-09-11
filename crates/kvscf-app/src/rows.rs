@@ -13,6 +13,9 @@ use crate::fonts;
 use crate::theme::{self, dims};
 use crate::winset::SetEntry;
 
+/// Hover-tip line appended for an Extension Development Host row (WI #627).
+const EXT_DEV_TIP: &str = "\nExtension Development Host";
+
 /// One row's ingredients. `text` truncates with `…`; `trail` never truncates.
 pub struct RowSpec<'a> {
     /// Reserve the marker gutter (even with no marker, so sibling rows align).
@@ -124,6 +127,9 @@ pub fn draw(ui: &mut egui::Ui, spec: RowSpec<'_>) -> egui::Response {
 }
 
 /// A running VS Code window: build-colored bold name, host kept in full, ★ when favorited.
+///
+/// An Extension Development Host (WI #627) takes the red accent instead of its build color — the
+/// point is that a debug target should not read as an ordinary window you meant to switch to.
 pub fn code_row(
     ui: &mut egui::Ui,
     item: &Instance,
@@ -132,6 +138,11 @@ pub fn code_row(
     active: bool,
 ) -> egui::Response {
     let p = theme::palette(ui.visuals().dark_mode);
+    let color = if item.ext_dev_host {
+        p.ext_dev
+    } else {
+        p.app(item.app)
+    };
     let resp = draw(
         ui,
         RowSpec {
@@ -139,7 +150,7 @@ pub fn code_row(
             marker: favorited.then_some(("★", p.fav_star)),
             text: &item.workspace,
             font: name_font.clone(),
-            color: p.app(item.app),
+            color,
             trail: item
                 .remote
                 .host()
@@ -148,6 +159,9 @@ pub fn code_row(
         },
     );
     let mut tip = hover_text(item);
+    if item.ext_dev_host {
+        tip.push_str(EXT_DEV_TIP);
+    }
     if favorited {
         tip.push_str("\n★ favorite");
     }

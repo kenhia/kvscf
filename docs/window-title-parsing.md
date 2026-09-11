@@ -20,15 +20,35 @@ Given a title, it does, in order:
 
 1. Strip any stray `${…}` tokens (config drift).
 2. Strip a leading "dirty" indicator (`●` / `•` / `*`) and an optional leading `- `.
-3. Cut the app-name suffix at the **last** `" - Visual Studio Code"` (drops `… - Visual Studio Code
+3. Strip a leading `[Extension Development Host]` and remember that it was there (WI #627).
+4. If what remains is *exactly* an app name, this window has **no folder open**; a dev host is
+   labelled `Extension Development Host`, and an ordinary one falls through to the steps below.
+5. Cut the app-name suffix at the **last** `" - Visual Studio Code"` (drops `… - Visual Studio Code
    - Insiders`, profile names, etc.).
-4. Split what's left on the **first** `" - "`: the left side is the **rootName**, the right side is
+6. Split what's left on the **first** `" - "`: the left side is the **rootName**, the right side is
    the active-file label.
-5. From the rootName, peel a trailing `[SSH: host]` / `[WSL: distro]` / `[Dev Container: name]` /
+7. From the rootName, peel a trailing `[SSH: host]` / `[WSL: distro]` / `[Dev Container: name]` /
    `[Codespaces]` bracket into the remote.
 
 So the built-in assumption is: **`rootName` (folder, plus its `[SSH: host]` bracket if remote) is the
 first `" - "`-separated segment; the active file, if any, follows.**
+
+### VS Code's own title decorations
+
+Independently of your `window.title`, VS Code wraps the result for three special window states. The
+strings are in its own nls bundle, key `devExtensionWindowTitlePrefix` / `userIsAdmin` / `userIsSudo`
+in `vs/workbench/browser/parts/titlebar/windowTitle`, and the square brackets are part of the
+localized text rather than punctuation VS Code adds:
+
+| state | decoration | where | handled by |
+|---|---|---|---|
+| extension debug target | `[Extension Development Host]` | **prefix** | step 3 — it sits in front of `rootName`, so without stripping it the workspace reads `[Extension Development Host] korg-vs` |
+| elevated (Windows) | `[Administrator]` | suffix | step 5, for free — it lands after the app name and is cut with it |
+| elevated (POSIX) | `[Superuser]` | suffix | step 5, for free |
+
+If you localize VS Code, the prefix is translated and `EXT_DEV_PREFIX` in `parse.rs` no longer
+matches; a dev host then parses as an ordinary window rather than failing. Change that constant to
+your locale's string if you need the red flagging.
 
 ## Step 1 — capture your real titles
 

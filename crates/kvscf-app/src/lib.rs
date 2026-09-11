@@ -797,9 +797,10 @@ impl KvscfApp {
             // No auto-hide — a cold-launching app can take many seconds to appear.
             launch_and_focus(&spec, &matcher);
         }
-        // Relaunch a clicked dimmed favorite (sprint 008).
+        // Relaunch a clicked dimmed favorite (sprint 008), and bring it to the front once it
+        // appears (WI #1311) — the Apps path above has done that since sprint 007.
         if let Some(entry) = actions.fav_launch {
-            let _ = winset::launch(&entry);
+            winset::launch_and_focus(&entry);
         }
         // Apply a favorites mutation from a right-click.
         match actions.fav_action {

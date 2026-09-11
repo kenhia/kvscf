@@ -3,12 +3,12 @@
 //! Update Assist flow. Relaunch is a local `code`/`code-insiders --folder-uri` call — kvscf runs
 //! on the same box, so no krcmd round-trip is needed.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use kvscf_core::{scan, App, Instance};
+use kvscf_core::{focus, scan, App, Instance};
 
 /// One entry in a window set: which build + the exact folder URI to relaunch.
 #[derive(Debug, Clone)]
@@ -274,8 +274,68 @@ pub fn launch(entry: &SetEntry) -> std::io::Result<()> {
     }
 }
 
+/// How many times to look for a relaunched favorite's window, and how long between looks.
+///
+/// Longer than the Apps tab's ~20s (`kvscf_core::launch_and_focus`): VS Code's own cold start is
+/// slower than a typical exe, and a **remote** favorite only takes its final title once the
+/// SSH/WSL connection is up — the slowest case, and one Ken uses daily.
+const FAV_FOCUS_TRIES: u32 = 60;
+const FAV_FOCUS_INTERVAL: Duration = Duration::from_millis(500);
+
+/// Does this open window look like the favorite that was just launched?
+///
+/// Matched on the three structured fields rather than the folder URI, because recovering a
+/// window's URI means re-reading every `workspace.json` (see [`resolve_open_set`]) — far too
+/// expensive for a 500ms poll. Build + workspace + host is enough here precisely because the
+/// candidate set is already narrowed to windows that **did not exist** before the launch.
+fn is_relaunched(inst: &Instance, want: &SetEntry) -> bool {
+    inst.app == want.app
+        && inst.workspace == want.workspace
+        && inst.remote.host() == want.host.as_deref()
+}
+
+/// Launch one favorite, then foreground its window once it appears (WI #1311).
+///
+/// The Apps tab has done this since sprint 007, and `kvscf_core::app`'s own comment records the
+/// same symptom for a cold-launched app ("Kindle opened *behind* another window"). A relaunched
+/// favorite never did, so clicking a dimmed row started VS Code behind whatever was in front.
+///
+/// Ken's note on the WI was that the fix might be worse than the symptom — a focus steal arriving
+/// seconds later, after he has moved on, is worse than no focus at all. Two things bound that:
+///
+/// * only a window that **was not open** before the launch is ever focused, so a late poll cannot
+///   grab something Ken switched to himself; and
+/// * the poll stops at the first match, so it focuses once and never again.
+pub fn launch_and_focus(entry: &SetEntry) {
+    let entry = entry.clone();
+    std::thread::spawn(move || {
+        // Snapshot first: this is what makes a late focus impossible to mis-aim.
+        let before: HashSet<i64> = scan().into_iter().map(|i| i.hwnd).collect();
+        if launch(&entry).is_err() {
+            return;
+        }
+        for _ in 0..FAV_FOCUS_TRIES {
+            std::thread::sleep(FAV_FOCUS_INTERVAL);
+            // A brand-new window is titled just the appName for a moment, so it will not match
+            // until VS Code has settled the title. Polling is what absorbs that.
+            if let Some(inst) = scan()
+                .into_iter()
+                .find(|i| !before.contains(&i.hwnd) && is_relaunched(i, &entry))
+            {
+                focus(inst.hwnd);
+                return;
+            }
+        }
+    });
+}
+
 /// Relaunch a set on a background thread, staggered (so a burst of remote reconnects doesn't
 /// stampede). Returns immediately.
+///
+/// Deliberately does **not** focus what it launches, unlike [`launch_and_focus`]: restoring a set
+/// means opening several windows, and foregrounding each in turn is a fight whose winner is
+/// whichever one happened to finish starting last. A set restore has no single window the user
+/// asked for, so there is nothing to bring to the front.
 pub fn relaunch(entries: Vec<SetEntry>, stagger: Duration) {
     std::thread::spawn(move || {
         for (i, e) in entries.iter().enumerate() {
@@ -364,17 +424,202 @@ pub fn save_favorites(entries: &[SetEntry]) -> std::io::Result<()> {
 /// Relaunch a favorite by its folder URI — the action behind a dashboard tap on a not-open
 /// favorite row (whose published `id` *is* the URI). Reads the persisted list, so it works from
 /// the remote subscriber thread, which has no app state. `false` if no favorite matches.
+///
+/// Focuses the window it opens (WI #1311): a tap on the panel is a request to go and work in that
+/// folder, so it should arrive in front, exactly as a click on the rail now does. The launch
+/// itself moves to a background thread, so the subscriber loop is not held for the poll — which is
+/// why the return value is now only "a favorite with that URI exists", as the line above says.
 #[allow(dead_code)] // only called from the `remote` build
 pub fn launch_favorite(uri: &str) -> bool {
     let Some(entry) = load_favorites().into_iter().find(|f| f.uri == uri) else {
         return false;
     };
-    launch(&entry).is_ok()
+    launch_and_focus(&entry);
+    true
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- is_relaunched (WI #1311): which new window counts as the favorite we launched ---
+
+    fn fav(app: App, workspace: &str, host: Option<&str>) -> SetEntry {
+        SetEntry {
+            app,
+            uri: format!("uri-for-{workspace}"),
+            label: workspace.to_string(),
+            workspace: workspace.to_string(),
+            host: host.map(str::to_string),
+        }
+    }
+
+    fn open(app: App, workspace: &str, remote: kvscf_core::Remote) -> Instance {
+        Instance {
+            hwnd: 1,
+            app,
+            workspace: workspace.to_string(),
+            remote,
+            active_file: None,
+            z_index: 0,
+            ext_dev_host: false,
+        }
+    }
+
+    #[test]
+    fn a_matching_local_window_is_the_relaunch() {
+        let want = fav(App::Insiders, "kvscf", None);
+        assert!(is_relaunched(
+            &open(App::Insiders, "kvscf", kvscf_core::Remote::Local),
+            &want
+        ));
+    }
+
+    #[test]
+    fn a_matching_remote_window_is_the_relaunch() {
+        let want = fav(App::Insiders, "kyac", Some("kai"));
+        assert!(is_relaunched(
+            &open(App::Insiders, "kyac", kvscf_core::Remote::Ssh("kai".into())),
+            &want
+        ));
+    }
+
+    #[test]
+    fn the_same_folder_in_the_other_build_is_not_the_relaunch() {
+        // A favorite's identity includes the build (see `same_target`), so relaunching the
+        // Insiders favorite must not focus a Stable window on the same folder.
+        let want = fav(App::Insiders, "kvscf", None);
+        assert!(!is_relaunched(
+            &open(App::Stable, "kvscf", kvscf_core::Remote::Local),
+            &want
+        ));
+    }
+
+    #[test]
+    fn the_same_folder_name_on_another_host_is_not_the_relaunch() {
+        let want = fav(App::Insiders, "klams", Some("kubs0"));
+        assert!(!is_relaunched(
+            &open(
+                App::Insiders,
+                "klams",
+                kvscf_core::Remote::Ssh("kai".into())
+            ),
+            &want
+        ));
+    }
+
+    #[test]
+    fn a_local_favorite_does_not_match_a_remote_window_of_the_same_name() {
+        let want = fav(App::Insiders, "klams", None);
+        assert!(!is_relaunched(
+            &open(
+                App::Insiders,
+                "klams",
+                kvscf_core::Remote::Ssh("kubs0".into())
+            ),
+            &want
+        ));
+        // ...and the reverse: a remote favorite must not match the local folder.
+        let want_remote = fav(App::Insiders, "klams", Some("kubs0"));
+        assert!(!is_relaunched(
+            &open(App::Insiders, "klams", kvscf_core::Remote::Local),
+            &want_remote
+        ));
+    }
+
+    #[test]
+    fn a_half_started_window_does_not_match_yet() {
+        // A brand-new VS Code window is titled just the appName until the workbench settles, so
+        // it parses to workspace "Visual Studio Code". It must not be focused as the relaunch.
+        let want = fav(App::Insiders, "kvscf", None);
+        assert!(!is_relaunched(
+            &open(
+                App::Insiders,
+                "Visual Studio Code",
+                kvscf_core::Remote::Local
+            ),
+            &want
+        ));
+    }
+
+    /// The real thing for #1311: launch a folder that is **not** currently open and confirm the
+    /// new window comes to the front.
+    ///
+    /// **Ignored by default** — it starts a real VS Code window on this desktop, so it has no
+    /// business in `cargo test`. Run it during sprint verification:
+    ///
+    /// ```text
+    /// KVSCF_FOCUS_TEST_URI=file:///d%3A/ClaudeWorks/korg-vs     ///   cargo test -p kvscf-app -- --ignored --nocapture comes_to_the_front
+    /// ```
+    ///
+    /// The URI comes from the environment rather than a hardcoded path so this is not tied to one
+    /// machine; give it a folder that is **closed**, since relaunching an already-open folder makes
+    /// VS Code focus the existing window instead of creating one (no new hwnd, nothing to match).
+    /// The window it opens is closed again even when an assertion fails.
+    ///
+    /// **What this does and does not prove.** It is an end-to-end smoke check: the window appears
+    /// and ends up in front. It does *not* isolate the focus call, because a new VS Code window
+    /// sometimes comes to the front on its own — unreliably, which is the whole of #1311. So a
+    /// pass means the path works, not that the focus was load-bearing on that run. Making it
+    /// decisive would mean forcing the window to open behind, which is exactly the timing nobody
+    /// controls; the unit tests above cover the part that is deterministic (which window is
+    /// eligible to be focused at all).
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "starts a real VS Code window on this desktop"]
+    fn a_relaunched_favorite_comes_to_the_front() {
+        let Ok(uri) = std::env::var("KVSCF_FOCUS_TEST_URI") else {
+            eprintln!(
+                "SKIPPED: set KVSCF_FOCUS_TEST_URI to the folder-uri of a VS Code window that is                  NOT currently open"
+            );
+            return;
+        };
+        // Built exactly the way `read_entries` builds a loaded favorite, so this exercises the
+        // real shape and not a convenient one.
+        let (workspace, host) = parse_uri(&uri).expect("not a folder-uri kvscf understands");
+        let entry = SetEntry {
+            app: App::Insiders,
+            uri,
+            label: workspace.clone(),
+            workspace,
+            host,
+        };
+
+        let before: HashSet<i64> = scan().into_iter().map(|i| i.hwnd).collect();
+        launch_and_focus(&entry);
+
+        // Watch for the window ourselves, in parallel with the thread under test.
+        let mut appeared = None;
+        for _ in 0..80 {
+            std::thread::sleep(Duration::from_millis(500));
+            if let Some(i) = scan()
+                .into_iter()
+                .find(|i| !before.contains(&i.hwnd) && is_relaunched(i, &entry))
+            {
+                appeared = Some(i.hwnd);
+                break;
+            }
+        }
+        let hwnd = appeared.expect("the relaunched window never appeared");
+        eprintln!("window appeared: hwnd {hwnd}");
+
+        // Then wait for the code under test to foreground it (it polls on its own schedule).
+        let mut became_foreground = false;
+        for _ in 0..10 {
+            if kvscf_core::foreground_hwnd() == Some(hwnd) {
+                became_foreground = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+
+        // Clean up before asserting, so a failure does not leave a window behind.
+        kvscf_core::close_window(hwnd);
+        assert!(
+            became_foreground,
+            "the relaunched window opened but never came to the front"
+        );
+    }
 
     // --- parse_uri (WI #498): the favorites/relaunch identity path ---
 

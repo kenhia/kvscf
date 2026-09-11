@@ -24,6 +24,9 @@ pub struct Palette {
     pub fav_star: Color32,
     /// Not-running (launchable) app rows — plain gray, per the dashboard convention.
     pub dim: Color32,
+    /// Extension Development Host windows (WI #627) — red, so a debug target never reads as an
+    /// ordinary window you meant to switch to.
+    pub ext_dev: Color32,
     /// Gray level that [`Palette::dimmed`] blends accents toward.
     dim_blend: u16,
 }
@@ -37,6 +40,7 @@ const DARK: Palette = Palette {
     host: Color32::from_gray(150),
     fav_star: Color32::from_rgb(230, 185, 70),
     dim: Color32::from_gray(120),
+    ext_dev: Color32::from_rgb(235, 96, 96),
     dim_blend: 90,
 };
 
@@ -49,6 +53,7 @@ const LIGHT: Palette = Palette {
     host: Color32::from_gray(110),
     fav_star: Color32::from_rgb(185, 140, 20),
     dim: Color32::from_gray(150),
+    ext_dev: Color32::from_rgb(190, 30, 30),
     dim_blend: 165,
 };
 

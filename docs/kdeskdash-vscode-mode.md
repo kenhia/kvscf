@@ -48,7 +48,8 @@ needs — that LAN path is not covered by the tailnet ACLs protecting every othe
       "remote_host": "kai",
       "app": "insiders",
       "active_file": "Plan sprint with WI 260 …",
-      "z_index": 3
+      "z_index": 3,
+      "ext_dev_host": false
     }
   ]
 }
@@ -64,6 +65,19 @@ Field notes:
 - `app` — `stable` | `insiders` | `exploration` | `unknown` (accent Insiders vs Stable differently).
 - `active_file` — active editor / tab label; may be truncated with `…` or `null`.
 - `z_index` — enumeration order (0 = most-recently-active); optional sort signal. kvscf sorts by name.
+- `ext_dev_host` — **added sprint 021 (WI #627).** `true` when this window is a VS Code *Extension
+  Development Host*: the debug target VS Code opens for an extension under development, not a window
+  the user is working in. kvscf's own rail paints these red; the panel should distinguish them too,
+  from its own palette rather than by copying a hex. Present on every row (always `false` on a dimmed
+  favorite, which cannot be one). **Additive and back-compatible** — a panel that does not read it is
+  unaffected, and a panel reading it against an older kvscf that does not send it must treat absent
+  as `false`.
+
+  A dev host opened with no folder — the usual case — publishes `workspace` and `label` as
+  `"Extension Development Host"` and `active_file: null`. Before sprint 021 the same window published
+  `workspace: "[Extension Development Host] Visual Studio Code"` **and `active_file: "Insiders"`**,
+  the latter being VS Code's edition name mis-parsed as a filename. If the panel has any stored or
+  cached instance rows, that is the shape they will be in.
 
 ## 2. Focus-command contract (kdeskdash publishes → kvscf consumes)
 
