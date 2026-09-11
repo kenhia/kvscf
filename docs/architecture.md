@@ -33,9 +33,13 @@ feature-gated `remote`.
 1. **Enumerate** — `EnumWindows` walks every top-level window; keep the visible, titled ones whose
    process image is `Code.exe` / `Code - Insiders.exe`. (One VS Code process hosts many windows, so
    `Get-Process` is insufficient — hence raw `EnumWindows`.)
-2. **Parse** — the window title → `Instance { hwnd, app, workspace, remote, active_file, z_index }`.
-   The appName (`Visual Studio Code[- Insiders]`) is stripped first (it contains the `" - "` separator),
-   then the remote tag (`[SSH: host]` etc.) is pulled out of the workspace name.
+2. **Parse** — the window title →
+   `Instance { hwnd, app, workspace, remote, active_file, z_index, ext_dev_host }`.
+   VS Code's `[Extension Development Host]` **prefix** is stripped first and recorded as
+   `ext_dev_host` (WI #627); the appName (`Visual Studio Code[- Insiders]`) is stripped next (it
+   contains the `" - "` separator, and this is also what removes an `[Administrator]`/`[Superuser]`
+   **suffix**), then the remote tag (`[SSH: host]` etc.) is pulled out of the workspace name.
+   See `docs/window-title-parsing.md` for the full ordered list and the decoration table.
 3. **Focus** — `focus_with(hwnd, maximize)`: attach to the current foreground thread, un-minimize only
    if needed (never un-maximize — WI #465), `SetForegroundWindow` + `BringWindowToTop`, detach. Bare
    `SetForegroundWindow` is unreliable; the `AttachThreadInput` recipe is what makes it land, even when
@@ -144,7 +148,10 @@ same folder in Stable vs Insiders are distinct favorites).
 On the Code tab: open windows render as usual with a **★** in a reserved left gutter when favorited
 (the gutter is always reserved so marked/unmarked rows stay aligned); favorites with **no open
 window** render **dimmed with ○** below a separator, and clicking one **relaunches** it via
-`winset::launch`. Right-click gives Mark/Unfavorite and, on a favorited open row, **"Close (keep
+`winset::launch_and_focus`, which foregrounds the new window once it appears (WI #1311) — only ever a
+window that was not already open, so a slow launch cannot steal focus from something else.
+`winset::relaunch` (whole-set restore) deliberately does not focus, having no single window the user
+asked for. Right-click gives Mark/Unfavorite and, on a favorited open row, **"Close (keep
 favorite)"** — `close_window` frees the RAM and the entry drops straight into the dimmed group.
 
 "Is this favorite open?" needs each open window's URI, which is the expensive part (reading VS Code's
