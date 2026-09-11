@@ -53,6 +53,17 @@ commands. Public repo; shipped through sprint 018 and in daily use on cleo.
 `just check` is the gate and it is a **faithful mirror of `.github/workflows/ci.yml`** — two passes,
 not one. Change one and change the other in the same commit.
 
+**Run the gate on cleo — not through `build-clones` on kai.** CI is `windows-latest`, and nearly all of
+this crate is `#[cfg(windows)]`: a Linux build compiles the **stubs** in `kvscf-core/src/lib.rs` and
+goes green having tested none of the real code. That is a gate that proves the opposite of what it
+appears to prove, so it is worse than no gate. cleo is the canonical clone *and* the CI platform;
+the gate belongs here. (Sprint 021 — proposal korg:2224's notes said the reverse.)
+
+`@stable` in CI **floats**, so `rustup update` before the gate, or a green local run can still fail
+CI on lints the newer stable added. Sprint 021 found cleo two releases behind (1.97.1 vs 1.98.1).
+Run a baseline `just check` after updating and *before* editing, so new lints are not mistaken for
+your own.
+
 ```
 just check          # both passes (what CI runs)
 just check-default  # pass 1: default members, remote ON

@@ -156,6 +156,29 @@ One small correction on the record: the proposal's notes said the Linux-side che
 `windows-latest`, and nearly all of this crate is `#[cfg(windows)]`. Running it on kai would have
 exercised the non-Windows stubs. cleo *is* the CI platform; the real gate ran here.
 
+## This slice is visible on the panel, which was not obvious
+
+Asked at review: `ext_dev_host` is not on the wire, but does the **workspace string** ride it? It
+does. `build_instances_json` publishes `label`, `workspace` and `active_file`, and
+`Instance::label()` for a local window *is* the bare workspace — a dev host is `Remote::Local`, so
+all three move together:
+
+| field | before | after |
+|---|---|---|
+| `label` | `[Extension Development Host] Visual Studio Code` | `Extension Development Host` |
+| `workspace` | `[Extension Development Host] Visual Studio Code` | `Extension Development Host` |
+| `active_file` | `"Insiders"` | `null` |
+
+So **kdeskdash's rail renders a dev host differently from today**, with no kdeskdash change and
+none required: no field was added or removed, and `active_file: null` is already the normal shape for
+a window with no file open (`no_active_file` has been a parse case since sprint 001). The panel reads
+a better label than it did, which is the point of #627 — but it is a visible change on Ken's panel
+produced by a slice whose first wrap-up said it had no cross-repo effect. Structurally true, in
+effect misleading; corrected here.
+
+What is still *not* possible on the panel is telling a dev host apart by colour, since the flag
+itself does not travel. That is korg #2365.
+
 ## Cross-slice state (korg:2230, krot, same host)
 
 - **kvscf was not restarted — zero times.** The running instance is still pid 8448, started
@@ -171,10 +194,10 @@ exercised the non-Windows stubs. cleo *is* the CI platform; the real gate ran he
 - **Ordinary folderless windows** still read as workspace `Visual Studio Code` (characterization
   test `an_ordinary_folderless_window_keeps_its_historical_parse`). Decide whether those should be
   relabelled or dropped from the rail.
-- **The dashboard does not learn about dev hosts.** `ext_dev_host` is not on the
-  `kvscf:instances:<host>` wire, so a dev host renders on the kdeskdash panel as an ordinary window.
-  Adding it is a kdeskdash-side change as well as a wire-contract change, which is its own slice, not
-  a quiet addition here.
+- **The dashboard cannot tell a dev host apart — but its label already changed.** `ext_dev_host` is
+  not on the `kvscf:instances:<host>` wire, so kdeskdash cannot *style* one. It does, however, now
+  receive a different label for it (see "This slice is visible on the panel" above). Putting the flag
+  on the wire needs a contract change plus a kdeskdash change — its own slice. Filed as korg #2365.
 - **Stable VS Code on cleo has no folder-first `window.title`** — its window reads `settings.json`
   where the project name should be (visible in the CLI dumps above). That is the documented Path-1
   setup step from the `kvscf-window-title` skill, not a bug, but it is live on Ken's machine.
