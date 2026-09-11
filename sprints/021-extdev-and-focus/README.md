@@ -116,7 +116,7 @@ same folder name on another host (Ken has `klams` on two hosts; see sprint 020).
 
 The poll runs 60 × 500ms = 30s, longer than the Apps tab's 20s: VS Code's cold start is slower than
 a typical exe, and a **remote** favorite only takes its final title once the SSH connection is up.
-Ten of Ken's eleven favorites are remote.
+**26 of Ken's 31 favorites are remote**, so the slow case is the normal one here.
 
 **`relaunch` (set restore) deliberately still does not focus.** Restoring a set opens several
 windows, and foregrounding each in turn is a fight whose winner is whichever finished starting last.
@@ -204,9 +204,11 @@ now a kdeskdash-only item with no kvscf dependency.
 
 ## Cross-slice state (korg:2230, krot, same host)
 
-- **kvscf was not restarted — zero times.** The running instance is still pid 8448, started
-  2026-09-10 23:36:50, which is slice korg:2231's restart, not this sprint's. The fix therefore is
-  **not live** on cleo; `C:\tools\bin\kvscf.exe` is untouched and this repo has no `just deploy`.
+- **kvscf was not restarted once during implementation or the ship — zero times.** Through all of
+  that the running instance stayed pid 8448 from 2026-09-10 23:36:50, which is slice korg:2231's
+  restart, not this sprint's, so the krot leg could attribute any Redis-consumer oddity on cleo
+  correctly. **One restart followed, after the merge and after krot had finished probing** — see
+  **Deployed** below. This repo has no `just deploy`; the exe was replaced by hand.
 - **`HKCU\Software\kenhia\kvscf` was not written.** Confirmed after the work that
   `KVSCF_REDIS_PASSWORD` is still there, by value *name* only, from an `ssh cleo` session rather than
   from inside the MSIX-packaged app.
@@ -226,3 +228,64 @@ now a kdeskdash-only item with no kvscf dependency.
   `KVSCF_REDIS_PASSWORD` run on rpidash3 via korg program 1143; slice korg:2231 did it on **rpidash2**
   on 2026-09-10. Whether that run actually authenticated was not checked here — it needs the Redis
   side, which belongs to the krot/kdeskdash slices, not this one.
+
+## Deployed
+
+`C:\tools\bin\kvscf.exe` replaced from merged `main` and restarted, 2026-09-11, at Ken's
+instruction and after he closed the running copy.
+
+| | before | after |
+|---|---|---|
+| exe | 7,279,616 bytes, 2026-08-27 20:21:40 | 7,296,000 bytes, 2026-09-11 07:55:33 |
+| SHA256 | `27E48E82…` | `AE121435…` |
+| process | pid 8448 (from 2026-09-10 23:36:50) | **pid 22480** |
+
+Built with `cargo build --release -p kvscf`, copied and hash-verified from an **`ssh cleo` session**
+rather than from inside the MSIX-packaged app, and started through the `kvscf-relaunch` scheduled
+task — the only route to a session-1 GUI app from ssh. Installed hash matches the built artifact
+exactly.
+
+**Restart count for this sprint: one.** It was zero through implementation and the ship, which the
+parallel krot slice (korg:2230) needed in order to distinguish a restart of ours from a credential
+fault; this one restart happened after that slice had finished probing cleo's Redis.
+
+### Redis auth confirmed live, and the probe's first attempt was wrong
+
+This is the answer the roadmap's "First live AUTH run" item wanted, measured rather than cited:
+
+```
+AUTH             -> +OK
+EXISTS instances -> 1
+TTL (seconds)    -> 10
+KEYS kvscf:*     -> kvscf:edge:cleo  kvscf:instances:cleo  kvscf:launcher:cleo  kvscf:apps:cleo
+```
+
+All four keys present on a live 10-second TTL, so the new build authenticates and is actively
+republishing.
+
+**The first attempt connected to the wrong endpoint and must not be read as a failure.** Probing
+`rpidash2:6380` by name was refused — the name resolves to the **tailnet** address
+(`100.124.180.71`), and slice korg:2231 deliberately dropped that listener when it added the
+`requirepass`. kvscf itself pins the LAN IP `192.168.1.144` for exactly this reason
+(`DEFAULT_HOST`, commented *"pinned, per handoff"*). A refused connection to a listener that was
+removed on purpose looks identical to an auth failure from the outside; only re-probing **the
+endpoint the program actually uses** distinguishes them.
+
+### The sprint's own change, verified on the live wire
+
+`ext_dev_host` is present on every row of `kvscf:instances:cleo`, all `false` with no dev host
+currently open. So korg #2365 (kdeskdash colouring) is now unblocked at the **live** level and not
+merely in source.
+
+### One correction this deploy forced
+
+The favorites count above. This record first said *"ten of Ken's eleven favorites"*, read from
+`%APPDATA%\kvscf\favorites.json` through the Bash tool — i.e. **from inside the MSIX-packaged app,
+which serves a virtualized view of `%APPDATA%`**. The real file, read over `ssh`, holds **31**
+favorites (26 remote, 5 local). The argument was unaffected (remote still dominates, which is what
+the longer poll window is for) but the figure was wrong.
+
+The global `CLAUDE.md` warns about this trap for *writes*; this is the same trap in the **read**
+direction, and it is quieter, because a virtualized read returns plausible content instead of
+failing. Verify anything read from `%APPDATA%` here from an ssh session, exactly as the registry
+check in this sprint already was.
