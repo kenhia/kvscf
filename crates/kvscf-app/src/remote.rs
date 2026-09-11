@@ -741,6 +741,7 @@ mod tests {
             remote: Remote::Ssh("kai".into()),
             active_file: None,
             z_index: 0,
+            ext_dev_host: false,
         };
         let favorited: HashSet<i64> = [42].into_iter().collect();
         let dimmed = vec![SetEntry {

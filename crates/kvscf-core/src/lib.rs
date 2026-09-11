@@ -189,6 +189,8 @@ pub struct Instance {
     pub active_file: Option<String>,
     /// Enumeration order = top-to-bottom Z-order; a cheap recency proxy.
     pub z_index: usize,
+    /// An Extension Development Host window (WI #627) — painted red in the rail.
+    pub ext_dev_host: bool,
 }
 
 impl Instance {
@@ -279,6 +281,7 @@ mod sort_tests {
             remote,
             active_file: None,
             z_index: z,
+            ext_dev_host: false,
         }
     }
 

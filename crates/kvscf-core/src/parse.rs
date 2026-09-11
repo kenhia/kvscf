@@ -6,6 +6,12 @@
 //! remainder on the first `" - "` into `rootName` / `activeEditorShort`. The remote tag lives
 //! inside `rootName` as a trailing `[SSH: host]` / `[WSL: distro]` / `[Dev Container: name]` /
 //! `[Codespaces]` bracket. Dirty is intentionally not surfaced.
+//!
+//! VS Code also decorates the title for special windows (`windowTitle.ts`): a **prefix**
+//! `[Extension Development Host]`, and the **suffixes** `[Administrator]` / `[Superuser]`. Only
+//! the prefix needs handling — it lands in front of `rootName`, so without stripping it the
+//! workspace reads `"[Extension Development Host] korg-vs"`. The suffixes sit after the appName
+//! and the `APP_MARKER` cut already removes them (locked in by tests).
 
 use crate::Remote;
 
@@ -16,9 +22,45 @@ pub struct ParsedTitle {
     pub workspace: String,
     pub remote: Remote,
     pub active_file: Option<String>,
+    /// This window is an Extension Development Host (WI #627) — the debug target VS Code opens
+    /// for an extension under development. The rail paints these red.
+    pub ext_dev_host: bool,
 }
 
 const APP_MARKER: &str = " - Visual Studio Code";
+
+/// VS Code's own prefix decoration for an extension-development-host window — verbatim from
+/// `vs/workbench/browser/parts/titlebar/windowTitle`, nls key `devExtensionWindowTitlePrefix`.
+/// The brackets are part of the localized string, not punctuation we add.
+const EXT_DEV_PREFIX: &str = "[Extension Development Host]";
+
+/// Workspace label for a dev host with no folder open — which is what F5 from an extension repo
+/// gives you, and the case Ken reported. The title carries no folder name at all, so there is
+/// nothing to show but what the window *is*.
+const EXT_DEV_LABEL: &str = "Extension Development Host";
+
+/// Every appName VS Code ships, matched exactly. A title equal to one of these is a window with
+/// **no folder open**: the appName is the whole title, with no `rootName` and no separator in
+/// front of it, so the `APP_MARKER` cut has nothing to bite on. Exact equality (not a prefix
+/// test) is what keeps a folder genuinely named `Visual Studio Code` from reading as folderless.
+const APP_NAMES: [&str; 3] = [
+    "Visual Studio Code",
+    "Visual Studio Code - Insiders",
+    "Visual Studio Code - Exploration",
+];
+
+/// Is this the bare appName — i.e. a window with nothing open?
+fn is_bare_app_name(t: &str) -> bool {
+    APP_NAMES.contains(&t)
+}
+
+/// Split off a leading `[Extension Development Host]`, reporting whether it was there.
+fn strip_ext_dev_prefix(s: &str) -> (&str, bool) {
+    match s.strip_prefix(EXT_DEV_PREFIX) {
+        Some(rest) => (rest.trim_start(), true),
+        None => (s, false),
+    }
+}
 
 /// Parse a raw window title. Returns `None` for an empty/degenerate title.
 pub fn parse_title(title: &str) -> Option<ParsedTitle> {
@@ -26,7 +68,25 @@ pub fn parse_title(title: &str) -> Option<ParsedTitle> {
     let t = strip_var_tokens(title.trim());
     // 2) drop a leading dirty indicator (we do not expose dirty).
     let t = strip_leading_dirty(&t);
-    // 3) cut the appName (and any trailing profile) at the last " - Visual Studio Code".
+    // 3) strip the Extension Development Host prefix (WI #627). Must happen before the appName
+    //    cut and the rootName split, or it is parsed as part of the workspace name.
+    let (t, ext_dev_host) = strip_ext_dev_prefix(t);
+    // 4) a dev host with no folder open: the whole remainder is the appName, so there is no
+    //    rootName to find. Label it for what it is rather than letting step 6 split the appName
+    //    into "Visual Studio Code" + "Insiders".
+    //
+    //    Deliberately only for the dev host. An *ordinary* folderless window falls through to
+    //    the historical parse — changing what the rail shows for those is not this WI's call.
+    if ext_dev_host && is_bare_app_name(t) {
+        return Some(ParsedTitle {
+            workspace: EXT_DEV_LABEL.to_string(),
+            remote: Remote::Local,
+            active_file: None,
+            ext_dev_host: true,
+        });
+    }
+    // 5) cut the appName (and any trailing profile) at the last " - Visual Studio Code". This is
+    //    also what removes an `[Administrator]`/`[Superuser]` suffix, which sits after it.
     let t = match t.rfind(APP_MARKER) {
         Some(idx) => &t[..idx],
         None => t,
@@ -35,7 +95,7 @@ pub fn parse_title(title: &str) -> Option<ParsedTitle> {
     if t.is_empty() {
         return None;
     }
-    // 4) split rootName vs activeEditorShort on the FIRST " - ".
+    // 6) split rootName vs activeEditorShort on the FIRST " - ".
     let (root, active) = match t.find(" - ") {
         Some(i) => (t[..i].trim(), Some(t[i + 3..].trim())),
         None => (t, None),
@@ -49,6 +109,7 @@ pub fn parse_title(title: &str) -> Option<ParsedTitle> {
         workspace,
         remote,
         active_file,
+        ext_dev_host,
     })
 }
 
@@ -276,6 +337,112 @@ mod tests {
     fn empty_title_is_none() {
         assert!(parse_title("").is_none());
         assert!(parse_title("   ").is_none());
+    }
+
+    // --- Extension Development Host (WI #627) ---
+    //
+    // The prefix is verbatim from VS Code's own nls bundle (`devExtensionWindowTitlePrefix` in
+    // vs/workbench/browser/parts/titlebar/windowTitle), brackets included.
+
+    #[test]
+    fn ext_dev_host_with_no_folder_is_labelled_not_split() {
+        // What F5 from an extension repo gives you, and the shape Ken reported. Before #627 this
+        // parsed to workspace "[Extension Development Host] Visual Studio Code" / active
+        // "Insiders".
+        let r = p("[Extension Development Host] Visual Studio Code - Insiders");
+        assert_eq!(r.workspace, "Extension Development Host");
+        assert_eq!(r.remote, Remote::Local);
+        assert_eq!(r.active_file, None);
+        assert!(r.ext_dev_host);
+    }
+
+    #[test]
+    fn ext_dev_host_stable_with_no_folder() {
+        let r = p("[Extension Development Host] Visual Studio Code");
+        assert_eq!(r.workspace, "Extension Development Host");
+        assert!(r.ext_dev_host);
+    }
+
+    #[test]
+    fn ext_dev_host_with_a_folder_keeps_the_real_workspace() {
+        let r = p(
+            "[Extension Development Host] korg-vs - extension.ts - Visual Studio Code - Insiders",
+        );
+        assert_eq!(r.workspace, "korg-vs");
+        assert_eq!(r.active_file.as_deref(), Some("extension.ts"));
+        assert!(r.ext_dev_host);
+    }
+
+    #[test]
+    fn ext_dev_host_keeps_the_remote_tag() {
+        // The prefix goes in front of rootName, so the [SSH: host] bracket is still the suffix
+        // of rootName and must survive the strip.
+        let r = p(
+            "[Extension Development Host] kyac [SSH: kai] - ext.ts - Visual Studio Code - Insiders",
+        );
+        assert_eq!(r.workspace, "kyac");
+        assert_eq!(r.remote, Remote::Ssh("kai".into()));
+        assert!(r.ext_dev_host);
+    }
+
+    #[test]
+    fn ext_dev_host_survives_a_leading_dirty_marker() {
+        let r = p("\u{25CF} [Extension Development Host] korg-vs - Visual Studio Code - Insiders");
+        assert_eq!(r.workspace, "korg-vs");
+        assert!(r.ext_dev_host);
+    }
+
+    #[test]
+    fn an_ordinary_window_is_not_flagged() {
+        assert!(!p("kvscf - README.md - Visual Studio Code - Insiders").ext_dev_host);
+        assert!(!p("kvllm [SSH: kai] - x.md - Visual Studio Code - Insiders").ext_dev_host);
+    }
+
+    #[test]
+    fn a_folder_literally_named_visual_studio_code_is_not_mistaken_for_folderless() {
+        // Guards the exact-match choice in is_bare_app_name: a prefix test would label this
+        // "Extension Development Host" and throw the real folder away.
+        let r = p(
+            "[Extension Development Host] Visual Studio Code - main.rs - Visual Studio Code - Insiders",
+        );
+        assert_eq!(r.workspace, "Visual Studio Code");
+        assert_eq!(r.active_file.as_deref(), Some("main.rs"));
+        assert!(r.ext_dev_host);
+    }
+
+    #[test]
+    fn an_ordinary_folderless_window_keeps_its_historical_parse() {
+        // Characterization, not an endorsement: #627 deliberately did not change this. Left
+        // as-is so the change is confined to the dev host; see the sprint record.
+        let r = p("Visual Studio Code - Insiders");
+        assert_eq!(r.workspace, "Visual Studio Code");
+        assert!(!r.ext_dev_host);
+    }
+
+    // --- the sibling decorations, which need no code (windowTitle.ts emits these as SUFFIXES) ---
+
+    #[test]
+    fn administrator_suffix_is_already_cut_with_the_app_name() {
+        let r = p("kvscf - main.rs - Visual Studio Code [Administrator]");
+        assert_eq!(r.workspace, "kvscf");
+        assert_eq!(r.active_file.as_deref(), Some("main.rs"));
+        assert!(!r.ext_dev_host);
+    }
+
+    #[test]
+    fn superuser_suffix_is_already_cut_with_the_app_name() {
+        let r = p("kvscf - main.rs - Visual Studio Code - Insiders [Superuser]");
+        assert_eq!(r.workspace, "kvscf");
+        assert!(!r.ext_dev_host);
+    }
+
+    #[test]
+    fn a_dev_host_running_elevated_gets_both_decorations() {
+        let r = p(
+            "[Extension Development Host] korg-vs - Visual Studio Code - Insiders [Administrator]",
+        );
+        assert_eq!(r.workspace, "korg-vs");
+        assert!(r.ext_dev_host);
     }
 
     // --- Edge titles (WI #474), from real captured windows ---

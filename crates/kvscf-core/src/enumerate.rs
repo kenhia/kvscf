@@ -151,6 +151,7 @@ fn vscode_instance(w: &ImagedWin, z: usize) -> Option<Instance> {
         remote: parsed.remote,
         active_file: parsed.active_file,
         z_index: z,
+        ext_dev_host: parsed.ext_dev_host,
     })
 }
 
