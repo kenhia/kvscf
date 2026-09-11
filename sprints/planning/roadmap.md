@@ -6,16 +6,24 @@
 
 ## Now
 
-- **019 — the kprojects harness** (korg #1238). Agent instructions, `sprints/planning/`,
-  and a `just check` that mirrors both CI passes instead of only the first.
+- Nothing in flight. Sprints 019 (kprojects harness), 020 (favorites repair) and 021
+  (dev-host windows + focus after relaunch) have landed.
 
 ## Next
 
-- **Extension development support** (korg #627, S). Handle VS Code extension-development
-  windows, which today parse as an ordinary workspace.
-- **First live AUTH run.** Sprint 018 gave the publisher `KVSCF_REDIS_PASSWORD`, but nothing has
-  presented it yet — rpidash3's Redis gets its `requirepass` in slice 5 of korg program 1143, on
-  the kdeskdash side (#1137). Expect the first real end-to-end check there, not here.
+- **Folderless windows.** An ordinary VS Code window with no folder open still reads as workspace
+  `Visual Studio Code` in the rail. Sprint 021 fixed this only for the extension-development host
+  (korg #627) and deliberately left the general case alone; decide whether those rows should be
+  relabelled or dropped.
+- **Tell the dashboard about dev hosts.** Sprint 021 flags them in the rail, but `ext_dev_host` is
+  not on the `kvscf:instances:<host>` wire, so the kdeskdash panel still renders one as an ordinary
+  window. Needs a wire-contract change and a kdeskdash-side change together.
+- **First live AUTH run — premise moved, needs a status check.** Sprint 018 gave the publisher
+  `KVSCF_REDIS_PASSWORD`. This item expected the first real use on **rpidash3**, via slice 5 of korg
+  program 1143; in the event slice **korg:2231** put a `requirepass` on **rpidash2** on 2026-09-10
+  and migrated cleo's kvscf to it the same night. So the credential is in use now, and the open
+  question is no longer "when" but "did it authenticate" — which is answered from the Redis side,
+  not from this repo.
 
 ## Later / Ideas
 

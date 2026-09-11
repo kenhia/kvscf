@@ -542,6 +542,85 @@ mod tests {
         ));
     }
 
+    /// The real thing for #1311: launch a folder that is **not** currently open and confirm the
+    /// new window comes to the front.
+    ///
+    /// **Ignored by default** — it starts a real VS Code window on this desktop, so it has no
+    /// business in `cargo test`. Run it during sprint verification:
+    ///
+    /// ```text
+    /// KVSCF_FOCUS_TEST_URI=file:///d%3A/ClaudeWorks/korg-vs     ///   cargo test -p kvscf-app -- --ignored --nocapture comes_to_the_front
+    /// ```
+    ///
+    /// The URI comes from the environment rather than a hardcoded path so this is not tied to one
+    /// machine; give it a folder that is **closed**, since relaunching an already-open folder makes
+    /// VS Code focus the existing window instead of creating one (no new hwnd, nothing to match).
+    /// The window it opens is closed again even when an assertion fails.
+    ///
+    /// **What this does and does not prove.** It is an end-to-end smoke check: the window appears
+    /// and ends up in front. It does *not* isolate the focus call, because a new VS Code window
+    /// sometimes comes to the front on its own — unreliably, which is the whole of #1311. So a
+    /// pass means the path works, not that the focus was load-bearing on that run. Making it
+    /// decisive would mean forcing the window to open behind, which is exactly the timing nobody
+    /// controls; the unit tests above cover the part that is deterministic (which window is
+    /// eligible to be focused at all).
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "starts a real VS Code window on this desktop"]
+    fn a_relaunched_favorite_comes_to_the_front() {
+        let Ok(uri) = std::env::var("KVSCF_FOCUS_TEST_URI") else {
+            eprintln!(
+                "SKIPPED: set KVSCF_FOCUS_TEST_URI to the folder-uri of a VS Code window that is                  NOT currently open"
+            );
+            return;
+        };
+        // Built exactly the way `read_entries` builds a loaded favorite, so this exercises the
+        // real shape and not a convenient one.
+        let (workspace, host) = parse_uri(&uri).expect("not a folder-uri kvscf understands");
+        let entry = SetEntry {
+            app: App::Insiders,
+            uri,
+            label: workspace.clone(),
+            workspace,
+            host,
+        };
+
+        let before: HashSet<i64> = scan().into_iter().map(|i| i.hwnd).collect();
+        launch_and_focus(&entry);
+
+        // Watch for the window ourselves, in parallel with the thread under test.
+        let mut appeared = None;
+        for _ in 0..80 {
+            std::thread::sleep(Duration::from_millis(500));
+            if let Some(i) = scan()
+                .into_iter()
+                .find(|i| !before.contains(&i.hwnd) && is_relaunched(i, &entry))
+            {
+                appeared = Some(i.hwnd);
+                break;
+            }
+        }
+        let hwnd = appeared.expect("the relaunched window never appeared");
+        eprintln!("window appeared: hwnd {hwnd}");
+
+        // Then wait for the code under test to foreground it (it polls on its own schedule).
+        let mut became_foreground = false;
+        for _ in 0..10 {
+            if kvscf_core::foreground_hwnd() == Some(hwnd) {
+                became_foreground = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+
+        // Clean up before asserting, so a failure does not leave a window behind.
+        kvscf_core::close_window(hwnd);
+        assert!(
+            became_foreground,
+            "the relaunched window opened but never came to the front"
+        );
+    }
+
     // --- parse_uri (WI #498): the favorites/relaunch identity path ---
 
     #[test]
