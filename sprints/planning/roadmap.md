@@ -15,15 +15,13 @@
   `Visual Studio Code` in the rail. Sprint 021 fixed this only for the extension-development host
   (korg #627) and deliberately left the general case alone; decide whether those rows should be
   relabelled or dropped.
-- **Tell the dashboard about dev hosts.** Sprint 021 flags them in the rail, but `ext_dev_host` is
-  not on the `kvscf:instances:<host>` wire, so the kdeskdash panel still renders one as an ordinary
-  window. Needs a wire-contract change and a kdeskdash-side change together.
-- **First live AUTH run — premise moved, needs a status check.** Sprint 018 gave the publisher
-  `KVSCF_REDIS_PASSWORD`. This item expected the first real use on **rpidash3**, via slice 5 of korg
-  program 1143; in the event slice **korg:2231** put a `requirepass` on **rpidash2** on 2026-09-10
-  and migrated cleo's kvscf to it the same night. So the credential is in use now, and the open
-  question is no longer "when" but "did it authenticate" — which is answered from the Redis side,
-  not from this repo.
+- **Tell the dashboard about dev hosts.** kvscf's half is done — sprint 021 publishes
+  `ext_dev_host` on every instance row. What remains is kdeskdash colouring those rows (korg #2365),
+  with no kvscf work first.
+- **Retire the registry password on cleo and kwork** — korg WI 2404 (k-homelab's Windows changeover),
+  after sprint 022. cleo needs only the per-host file; **kwork needs `KVSCF_REDIS_AUTH_KEY` in its
+  `.env` before its registry value goes**, or it loses its dashboard. kwork is Ken's, at kwork.
+- **`KVSCF_TOKEN`** stays on HKCU until korg WI 2479 decides whose secret it is.
 
 ## Later / Ideas
 

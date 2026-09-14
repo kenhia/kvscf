@@ -11,7 +11,7 @@ contracts the kdeskdash `vscode` mode implements. The kvscf side (publisher + fo
 |---|---|
 | Host (from cleo) | `192.168.1.144` (rpidash2) — kdeskdash reads it as `127.0.0.1:6380` on the Pi |
 | Port | `6380` |
-| Auth | none (Redis-level) — trusted LAN. **Per endpoint, not a property of the protocol** — see below |
+| Auth | `requirepass` on both of today's endpoints (rpidash2 since korg:2231, rpidash3 since the kwork pairing). **Per endpoint, not a property of the protocol** — see below |
 | Instance | ephemeral: `maxmemory 32mb`, `allkeys-lru`, no persistence |
 
 The **`KVSCF_TOKEN`** preshared token authenticates the *focus command* (the only action),
@@ -19,7 +19,9 @@ independently of whether Redis itself is authenticated. It lives in `.env` on bo
 (`ken@kai:.../kdeskdash/.env` and `D:\ClaudeWorks\kvscf\.env`), as `KVSCF_TOKEN=kvscf-<64 hex>`.
 
 **Redis AUTH is a per-endpoint choice, and both sides support it** (kvscf since sprint 018, WI
-#1147). Publisher: `KVSCF_REDIS_PASSWORD`, registry-or-env, absent = connect unauthenticated.
+#1147). Publisher: the key named by `KVSCF_REDIS_AUTH_KEY` (default `CLAUDE_REDISCLI_AUTH`) from the
+environment, then `%ProgramData%\khomelab\secrets.env`, then the deprecated `KVSCF_REDIS_PASSWORD`
+registry value (sprint 022); absent = connect unauthenticated.
 Reader: `KDESKDASH_KVSCF_REDIS_AUTH` (WI 664). rpidash2:6380 stays open by design; a second
 endpoint may require a password without any contract change, which is what the kwork/rpidash3 pair
 needs — that LAN path is not covered by the tailnet ACLs protecting every other homelab hop.

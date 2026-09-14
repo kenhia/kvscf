@@ -13,14 +13,15 @@
 //!
 //! This is a library so two bin crates can build it with different features: `kvscf`
 //! (default, `remote` on → kdeskdash channel) and `kvscf-local` (`remote` off → no comms
-//! code at all, for `kwork`). See WI #471.
+//! code at all). See WI #471. kwork ran `kvscf-local` until the kwork/rpidash3 pairing, and runs
+//! the full build now.
 //!
 //! Module map (decomposed from this file in sprint 013, WI #496):
 //! `rows` (the one row painter) · `theme` (colors) · `fonts` · `settings` · `probes`
 //! (headless verification flags) · `apps` / `launcher` / `winset` / `dock` (domain) ·
 //! `editor` (the Launcher editor's own window) · `favedit` (the favorite editor's) ·
 //! `single_instance` / `userreg` (Windows plumbing) · `remote` (kdeskdash channel,
-//! feature-gated).
+//! feature-gated) · `redis_auth` (where its Redis password comes from, feature-gated).
 
 mod apps;
 mod dock;
@@ -39,6 +40,8 @@ mod single_instance;
 #[cfg(windows)]
 mod userreg;
 
+#[cfg(feature = "remote")]
+mod redis_auth;
 #[cfg(feature = "remote")]
 mod remote;
 
