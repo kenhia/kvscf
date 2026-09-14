@@ -35,6 +35,8 @@ pub fn try_run() -> bool {
         probe_fullscreen();
     } else if has("--dump-set") {
         dump_set();
+    } else if cfg!(feature = "remote") && has("--probe-redis-auth") {
+        probe_redis_auth();
     } else {
         return false;
     }
@@ -54,7 +56,25 @@ fn print_help() {
          \x20 --probe-fullscreen  sample fullscreen detection for 20s (dock yield, WI #481)\n\
          \x20 --dump-set          open windows resolved to relaunchable folder URIs"
     );
+    if REMOTE_BUILD {
+        println!(
+            "\x20 --probe-redis-auth  where the Redis password comes from (named, never shown),\n\
+             \x20                     then AUTH + a write and delete; exit 2 unless the write lands"
+        );
+    }
 }
+
+/// Which rung supplies the Redis password, then prove it against the configured endpoint
+/// (sprint 022). Exits 2 on any failure so a live check can assert on it.
+#[cfg(feature = "remote")]
+fn probe_redis_auth() {
+    if !crate::remote::probe_redis_auth() {
+        std::process::exit(2);
+    }
+}
+
+#[cfg(not(feature = "remote"))]
+fn probe_redis_auth() {}
 
 /// Confirm which build this is (guards the feature-unification trap).
 fn build_info() {

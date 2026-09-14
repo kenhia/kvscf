@@ -19,16 +19,23 @@
 //!
 //! Two independent gates, and they protect different things. `KVSCF_TOKEN` is the **app-level**
 //! gate on the focus command (the only action) and is mandatory — without it the channel stays
-//! off rather than run open. `KVSCF_REDIS_PASSWORD` is the **transport** gate, and is optional:
-//! cleo publishes to rpidash2:6380, which is deliberately unauthenticated on the trusted home
-//! LAN, and no password there means no AUTH rather than no channel.
+//! off rather than run open. The Redis password is the **transport** gate, and is optional in the
+//! code: an endpoint without `requirepass` is legitimate, and no password means no AUTH rather
+//! than no channel. Both of today's endpoints do require one — rpidash2:6380 since korg:2231
+//! (2026-09-10), rpidash3:6380 since the kwork pairing.
 //!
-//! The transport gate arrived in sprint 018 (WI #1147) because the Launcher's kwork half needs
-//! it: kwork publishes to rpidash3 over the LAN, where the tailnet ACLs that cover every other
-//! homelab path do not reach. Until then this module assumed an unauthenticated Redis outright.
+//! The transport gate arrived in sprint 018 (WI #1147) for the Launcher's kwork half: kwork
+//! publishes to rpidash3 over the LAN, where the tailnet ACLs that cover every other homelab path
+//! do not reach.
 //!
-//! Endpoint, token and password come from `HKCU\Software\kenhia\kvscf` first, then env / a
-//! `.env` file.
+//! Where each setting comes from:
+//! - the token: `HKCU\Software\kenhia\kvscf`, then env / a `.env` file (untouched until korg
+//!   WI 2479 decides whose secret it is);
+//! - the endpoint (`KVSCF_REDIS_HOST` / `_PORT`) and the password's key name
+//!   (`KVSCF_REDIS_AUTH_KEY`): env / `.env` only, non-secret;
+//! - the password: [`crate::redis_auth`] — the environment, then
+//!   `%ProgramData%\khomelab\secrets.env`, then the deprecated registry value — **resolved on
+//!   every connect**, so a rotation needs no relaunch (sprint 022).
 //!
 //! This whole module is compiled out of the `kvscf-local` build (feature `remote` off).
 
@@ -42,6 +49,7 @@ use std::collections::HashSet;
 
 use crate::apps::{self, AppEntry};
 use crate::launcher::{self, LauncherSet};
+use crate::redis_auth;
 use crate::winset::{self, SetEntry};
 
 const DEFAULT_HOST: &str = "192.168.1.144"; // rpidash2 LAN IP (pinned, per handoff)
@@ -51,27 +59,34 @@ const INSTANCES_TTL_SECS: u64 = 10;
 const RECONNECT_BACKOFF: Duration = Duration::from_secs(5);
 
 /// Resolved connection + identity config. `None` from [`Config::load`] disables the channel.
+///
+/// Deliberately holds **no password**: that is resolved on every connect
+/// ([`Config::resolve_password`]), so a rotation is picked up without a relaunch.
 #[derive(Clone)]
 struct Config {
     redis_host: String,
     redis_port: u16,
-    /// Redis `requirepass`, when the endpoint has one. `None` = connect unauthenticated, which is
-    /// correct for rpidash2:6380 and must stay the untouched default.
-    redis_password: Option<String>,
+    /// Which key in the environment / per-host secrets file holds this endpoint's password
+    /// (`KVSCF_REDIS_AUTH_KEY`, default `CLAUDE_REDISCLI_AUTH` for the default endpoint).
+    auth_key: String,
     token: String,
     this_host: String,
 }
 
+/// Best-effort: pull KEY=VALUE from a .env in cwd or next to the exe (endpoint and auth-key
+/// overrides, and the token fallback). Never overrides a variable already set.
+fn load_dotenv() {
+    dotenvy::dotenv().ok();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            dotenvy::from_path(dir.join(".env")).ok();
+        }
+    }
+}
+
 impl Config {
     fn load() -> Option<Config> {
-        // Best-effort: pull KEY=VALUE from a .env in cwd or next to the exe (for host/port
-        // overrides and as the token fallback).
-        dotenvy::dotenv().ok();
-        if let Ok(exe) = std::env::current_exe() {
-            if let Some(dir) = exe.parent() {
-                dotenvy::from_path(dir.join(".env")).ok();
-            }
-        }
+        load_dotenv();
 
         // Token: registry (preferred — HKCU\Software\kenhia\kvscf) → env/.env fallback. It works
         // regardless of where the exe is launched from (a pinned launch from C:\tools\bin has no
@@ -80,21 +95,30 @@ impl Config {
             .or_else(|| std::env::var("KVSCF_TOKEN").ok())
             .filter(|t| !t.is_empty())?;
 
-        Some(Config {
+        Some(Config::with_token(token))
+    }
+
+    /// Everything but the token, from the environment (after [`load_dotenv`]).
+    fn with_token(token: String) -> Config {
+        Config {
             redis_host: env_or("KVSCF_REDIS_HOST", DEFAULT_HOST),
             redis_port: std::env::var("KVSCF_REDIS_PORT")
                 .ok()
                 .and_then(|p| p.parse().ok())
                 .unwrap_or(DEFAULT_PORT),
-            // Same precedence as the token, and optional for the same reason it is not: an
-            // endpoint without `requirepass` is a legitimate configuration here, not a
-            // misconfiguration to refuse.
-            redis_password: registry_value("KVSCF_REDIS_PASSWORD")
-                .or_else(|| std::env::var("KVSCF_REDIS_PASSWORD").ok())
-                .filter(|p| !p.is_empty()),
+            auth_key: redis_auth::auth_key_in(&|k| std::env::var_os(k)),
             token,
             this_host: env_or("KVSCF_HOST_NAME", &computer_name()),
-        })
+        }
+    }
+
+    /// The password for this endpoint, and which rung supplied it. Called on every connect.
+    fn resolve_password(&self) -> redis_auth::Resolution {
+        redis_auth::resolve_in(
+            &self.auth_key,
+            |k| std::env::var_os(k),
+            || registry_value(redis_auth::LEGACY_NAME),
+        )
     }
 
     /// How to connect — built as a struct rather than a `redis://` URL, deliberately.
@@ -109,14 +133,21 @@ impl Config {
     /// goes straight into the struct and never becomes part of a string anything prints.
     ///
     /// [`endpoint`]: Config::endpoint
-    fn connection_info(&self) -> redis::ConnectionInfo {
+    fn connection_info(&self, password: Option<String>) -> redis::ConnectionInfo {
         redis::ConnectionInfo {
             addr: redis::ConnectionAddr::Tcp(self.redis_host.clone(), self.redis_port),
             redis: redis::RedisConnectionInfo {
-                password: self.redis_password.clone(),
+                password,
                 ..Default::default()
             },
         }
+    }
+
+    /// Resolve, announce the source (never the value), and open a client for this endpoint.
+    fn client(&self) -> redis::RedisResult<redis::Client> {
+        let auth = self.resolve_password();
+        redis_auth::announce(&self.auth_key, &auth);
+        redis::Client::open(self.connection_info(auth.password))
     }
 
     /// The endpoint for humans. **Display only, and deliberately password-free** — this string is
@@ -183,13 +214,14 @@ impl Channel {
                 .spawn(move || subscriber_loop(cfg))
                 .ok()?;
         }
-        // `auth=` reports only *whether* a password is configured. Saying so is worth a word: an
-        // endpoint that grew a `requirepass` while kvscf had none fails as a silent reconnect
-        // loop, and this line is what distinguishes that from an unreachable host.
+        // The key *name* only. Where the password actually came from is announced by the first
+        // connect (`redis_auth::announce`) — an endpoint that grew a `requirepass` while kvscf
+        // found none fails as a silent reconnect loop, and that line is what distinguishes it from
+        // an unreachable host.
         eprintln!(
-            "kvscf: remote channel up — {} auth={} (publish {}, focus {})",
+            "kvscf: remote channel up — {} auth key {} (publish {}, focus {})",
             cfg.endpoint(),
-            cfg.redis_password.is_some(),
+            cfg.auth_key,
             cfg.instances_key(),
             cfg.focus_channel()
         );
@@ -225,7 +257,7 @@ fn publisher_loop(cfg: Config, rx: Receiver<Snapshot>) {
     let apps_key = cfg.apps_key();
     let launcher_key = cfg.launcher_key();
     loop {
-        let client = match redis::Client::open(cfg.connection_info()) {
+        let client = match cfg.client() {
             Ok(c) => c,
             Err(_) => {
                 thread::sleep(RECONNECT_BACKOFF);
@@ -288,7 +320,7 @@ fn publisher_loop(cfg: Config, rx: Receiver<Snapshot>) {
 fn subscriber_loop(cfg: Config) {
     let channel = cfg.focus_channel();
     loop {
-        let client = match redis::Client::open(cfg.connection_info()) {
+        let client = match cfg.client() {
             Ok(c) => c,
             Err(_) => {
                 thread::sleep(RECONNECT_BACKOFF);
@@ -544,12 +576,12 @@ fn computer_name() -> String {
         .unwrap_or_else(|| DEFAULT_HOST_NAME.to_string())
 }
 
-/// Preferred secret source: a value under `HKCU\Software\kenhia\kvscf`. Robust to launch location
-/// (unlike a cwd/exe-dir `.env`) and to the boot-time HKCU `.DEFAULT` binding (via `userreg` —
-/// otherwise an early-launched kvscf would silently run with the channel off).
+/// A value under `HKCU\Software\kenhia\kvscf`. Robust to launch location (unlike a cwd/exe-dir
+/// `.env`) and to the boot-time HKCU `.DEFAULT` binding (via `userreg` — otherwise an
+/// early-launched kvscf would silently run with the channel off).
 ///
-/// Used for `KVSCF_TOKEN` and `KVSCF_REDIS_PASSWORD`, which want identical resolution: the
-/// registry is the one place that survives however the exe was started.
+/// Used for `KVSCF_TOKEN` (preferred source) and `KVSCF_REDIS_PASSWORD` (deprecated since sprint
+/// 022: the per-host secrets file comes first, see [`crate::redis_auth`]).
 #[cfg(windows)]
 fn registry_value(name: &str) -> Option<String> {
     crate::userreg::UserRoot::open()?
@@ -566,6 +598,61 @@ fn registry_value(_name: &str) -> Option<String> {
     None
 }
 
+/// `--probe-redis-auth` (sprint 022): name the endpoint, the key and the rung that answers — never
+/// the value — then AUTH, write a short-lived key and delete it. Returns `true` only if the write
+/// landed.
+///
+/// A write, not `PING` or a bare connect: an endpoint that answers unauthenticated commands, or a
+/// client that sends no AUTH at all, would pass either. Pair every pass with a wrong-password
+/// control (point `ProgramData` at a directory whose `secrets.env` holds a wrong value); the
+/// control must print `REFUSED`.
+///
+/// The probe key is `kvscf:probe:<host>`, outside every pattern kdeskdash scans, TTL 10s and
+/// deleted immediately.
+pub fn probe_redis_auth() -> bool {
+    load_dotenv();
+    let cfg = Config::with_token(String::new());
+    let auth = cfg.resolve_password();
+    println!("endpoint: {}", cfg.endpoint());
+    println!("auth key: {}", cfg.auth_key);
+    println!("source:   {}", auth.source.describe());
+
+    let fail = |stage: &str, e: redis::RedisError| {
+        // RedisError carries the server's reply (e.g. WRONGPASS), never the credential sent.
+        println!("{stage}: REFUSED - {e}");
+        false
+    };
+    let client = match redis::Client::open(cfg.connection_info(auth.password)) {
+        Ok(c) => c,
+        Err(e) => return fail("client", e),
+    };
+    let mut con = match client.get_connection_with_timeout(Duration::from_secs(5)) {
+        Ok(c) => c,
+        Err(e) => return fail("connect", e),
+    };
+    let key = format!("kvscf:probe:{}", cfg.this_host);
+    if let Err(e) = redis::cmd("SET")
+        .arg(&key)
+        .arg(now_secs())
+        .arg("EX")
+        .arg(10)
+        .query::<()>(&mut con)
+    {
+        return fail("write", e);
+    }
+    match redis::cmd("DEL").arg(&key).query::<i64>(&mut con) {
+        Ok(1) => {
+            println!("write:    ok ({key} set and deleted)");
+            true
+        }
+        Ok(n) => {
+            println!("write:    FAILED - DEL removed {n} keys, expected 1");
+            false
+        }
+        Err(e) => fail("delete", e),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -573,21 +660,21 @@ mod tests {
 
     const TOK: &str = "s3cret";
 
-    fn cfg_with_password(password: Option<&str>) -> Config {
+    fn kwork_cfg() -> Config {
         Config {
             redis_host: "192.168.1.73".into(),
             redis_port: 6379,
-            redis_password: password.map(str::to_string),
+            auth_key: "KVSCF_REDISCLI_AUTH".into(),
             token: TOK.into(),
             this_host: "kwork".into(),
         }
     }
 
     #[test]
-    fn no_password_configured_connects_unauthenticated() {
-        // cleo -> rpidash2:6380 is deliberately open on the trusted home LAN. Absent password
-        // must mean "no AUTH", never "no channel" — unlike the token.
-        let info = cfg_with_password(None).connection_info();
+    fn no_password_found_connects_unauthenticated() {
+        // An endpoint without `requirepass` is legitimate. Absent password must mean "no AUTH",
+        // never "no channel" — unlike the token.
+        let info = kwork_cfg().connection_info(None);
         assert_eq!(info.redis.password, None);
         assert_eq!(
             info.addr,
@@ -596,16 +683,18 @@ mod tests {
     }
 
     #[test]
-    fn a_configured_password_reaches_the_connection() {
-        let info = cfg_with_password(Some("hunter2")).connection_info();
+    fn a_resolved_password_reaches_the_connection() {
+        let info = kwork_cfg().connection_info(Some("hunter2".into()));
         assert_eq!(info.redis.password.as_deref(), Some("hunter2"));
     }
 
     #[test]
     fn the_logged_endpoint_never_carries_the_password() {
-        // `endpoint()` is printed to stderr when the channel comes up. This is the regression
-        // test for the reason a `redis://:pw@host` URL was not used.
-        let cfg = cfg_with_password(Some("hunter2"));
+        // `endpoint()` is printed to stderr when the channel comes up, and the config no longer
+        // even holds a password. This is the regression test for the reason a
+        // `redis://:pw@host` URL was not used.
+        let cfg = kwork_cfg();
+        let _ = cfg.connection_info(Some("hunter2".into()));
         let shown = cfg.endpoint();
         assert!(!shown.contains("hunter2"), "password leaked into {shown:?}");
         assert_eq!(shown, "redis://192.168.1.73:6379");
@@ -618,7 +707,7 @@ mod tests {
         // `redis://:{pw}@host` would present the wrong credentials or fail to parse; the struct
         // has no such failure mode, which is the whole argument for it.
         let pw = "p@ss:w/rd#%";
-        let info = cfg_with_password(Some(pw)).connection_info();
+        let info = kwork_cfg().connection_info(Some(pw.into()));
         assert_eq!(info.redis.password.as_deref(), Some(pw));
     }
 
@@ -676,7 +765,7 @@ mod tests {
         let cfg = Config {
             redis_host: "h".into(),
             redis_port: 1,
-            redis_password: None,
+            auth_key: redis_auth::DEFAULT_AUTH_KEY.into(),
             token: TOK.into(),
             this_host: "kwork".into(),
         };
@@ -735,7 +824,7 @@ mod tests {
         let cfg = Config {
             redis_host: "h".into(),
             redis_port: 1,
-            redis_password: None,
+            auth_key: redis_auth::DEFAULT_AUTH_KEY.into(),
             token: TOK.into(),
             this_host: "cleo".into(),
         };
@@ -788,7 +877,7 @@ mod tests {
         let cfg = Config {
             redis_host: "h".into(),
             redis_port: 1,
-            redis_password: None,
+            auth_key: redis_auth::DEFAULT_AUTH_KEY.into(),
             token: TOK.into(),
             this_host: "cleo".into(),
         };
@@ -824,7 +913,7 @@ mod tests {
         let cfg = Config {
             redis_host: "h".into(),
             redis_port: 1,
-            redis_password: None,
+            auth_key: redis_auth::DEFAULT_AUTH_KEY.into(),
             token: TOK.into(),
             this_host: "cleo".into(),
         };

@@ -66,19 +66,43 @@ mutex enforces a single instance.
 
 ## Remote channel (`remote` feature) ↔ kdeskdash
 
-The channel talks to the kdeskdash desk dashboard over the shared **"claude-feed" Redis** at
-`192.168.1.144:6380` (rpidash2; LAN, no Redis auth, ephemeral: 32mb / allkeys-lru / no persistence).
-**Two gates, protecting different things** (sprint 018, WI #1147):
+The channel talks to a kdeskdash desk dashboard over Redis: by default rpidash2's instance at
+`192.168.1.144:6380` (LAN, ephemeral: 32mb / allkeys-lru / no persistence); kwork points
+`KVSCF_REDIS_HOST` at rpidash3 instead. Both instances run `requirepass`. **Two gates, protecting
+different things** (sprint 018, WI #1147):
 
 - **`KVSCF_TOKEN`** — app-level, gating the only action, the focus command. **Mandatory**: without it
-  the channel stays off rather than run open.
-- **`KVSCF_REDIS_PASSWORD`** — transport-level Redis `requirepass`. **Optional**: rpidash2:6380 is
-  deliberately open on the trusted home LAN, and no password means no AUTH, not no channel.
+  the channel stays off rather than run open. Read from **`HKCU\Software\kenhia\kvscf` (preferred)**
+  via `userreg`, falling back to env / a `.env` file (cwd or next to the exe).
+- **The Redis password** — transport-level. **Optional in the code**: no password found means no
+  AUTH, not no channel.
 
-Both resolve identically — **`HKCU\Software\kenhia\kvscf` (preferred)** via `userreg`, falling back to
-env / a `.env` file (cwd or next to the exe). The registry path is robust to where the exe is launched
-from (a pinned launch from `C:\tools\bin` has no cwd/exe-dir `.env`). Endpoint host/port take env
-overrides, else the pinned rpidash2 defaults.
+Non-secret settings come from env / `.env` only: `KVSCF_REDIS_HOST`, `KVSCF_REDIS_PORT`,
+`KVSCF_HOST_NAME`, and **`KVSCF_REDIS_AUTH_KEY`** — the name of the key holding *this endpoint's*
+password, default `CLAUDE_REDISCLI_AUTH` (rpidash2's, in the fleet's naming); kwork sets
+`KVSCF_REDISCLI_AUTH` (rpidash3's).
+
+### Where the password comes from (sprint 022, `redis_auth.rs`)
+
+The fleet's per-host secrets contract (CD-19), **resolved on every connect** so a rotation needs no
+relaunch:
+
+1. the environment variable named by `KVSCF_REDIS_AUTH_KEY` (a `.env` counts);
+2. `%ProgramData%\khomelab\secrets.env`, `KEY='value'` lines rendered by k-homelab — `ProgramData` read
+   at run time, the rung **skipped** when unset, never assumed to be `C:\ProgramData`; a missing,
+   unreadable or keyless file means keep looking;
+3. deprecated: `HKCU\Software\kenhia\kvscf` `KVSCF_REDIS_PASSWORD`, then a `KVSCF_REDIS_PASSWORD`
+   environment variable. Still answers; warns once.
+
+**The key follows the endpoint, not the binary**: one kvscf talks to rpidash2 on cleo and to rpidash3
+on kwork, and each password has one fleet-wide name. A lookup order over both names was rejected — on
+a host holding both it would silently pick the wrong one.
+
+The first connect prints `kvscf: redis password from <source>` (named, never valued), and again only
+when the source changes. A release build has no console, so use the headless probe to see it:
+`kvscf.exe --probe-redis-auth` prints endpoint, key and source, then AUTHs, writes and deletes
+`kvscf:probe:<host>`; it exits 2 unless the write landed. Pair a pass with a wrong-password control by
+pointing `ProgramData` at a directory whose `khomelab\secrets.env` holds a wrong value.
 
 The transport gate exists for the Launcher's kwork half: kwork publishes to rpidash3 over the LAN,
 where the tailnet ACLs covering every other homelab path do not reach.
@@ -88,8 +112,9 @@ independent reasons: the endpoint string is printed to stderr when the channel c
 would need percent-encoding that a hand-rolled `format!` gets wrong for exactly the characters a
 generated password tends to contain — presenting the wrong credentials, or failing to parse and
 surfacing as an ordinary reconnect loop. `Client::open` takes `impl IntoConnectionInfo`, so the
-struct is free. `Config::endpoint()` stays display-only and password-free, with auth reported beside
-it as a boolean; a unit test asserts the password never appears in it.
+struct is free. `Config` holds no password at all since sprint 022 — `connection_info` takes the
+value resolved for that connect — and `Config::endpoint()` stays display-only; a unit test asserts
+the password never appears in it.
 
 ```mermaid
 flowchart LR
