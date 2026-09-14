@@ -146,3 +146,17 @@ rpidash2.
   install this build, add the `.env` line, create the file with `KVSCF_REDISCLI_AUTH`, check, *then*
   delete each host's HKCU password. Until then the registry value is kvscf's only source on both.
 - **WI 2479**: `KVSCF_TOKEN`.
+
+## Deployed
+
+`C:\tools\bin\kvscf.exe` on cleo, deployed **before** the merge under the overseer's clearance
+(korg:2434, comment 2251) and live-checked as recorded above; running since 2026-09-13 19:31 PDT.
+
+Merged as `14ec71c` (PR #25). The merged `main` tree is `6679f4f2…`, **identical** to the tree the
+deployed binary was built from, so the ship changed nothing under `crates/` and no redeploy was
+needed. Compared by tree, not binary hash (cleo's `core.autocrlf` makes a fresh checkout's build hash
+differently).
+
+**kwork is not deployed** — unreachable from cleo; it still runs the previous build and reads the
+registry. Its install, `.env` line and check are WI 2404's, by hand at kwork, in the order written
+there.
