@@ -1,5 +1,11 @@
 <img src="assets/kvscf-256.png" width="72" align="right" alt="kvscf icon">
 
+> **Retired 2026-09.** kvscf is superseded by
+> [kctrldeck](https://github.com/kenhia/kctrldeck), which took over window
+> focusing, the app launcher and the `kvscf:*` Redis publisher on `cleo`.
+> This repository is archived read-only; its sprint records and the wire
+> contract it originated are cited from kctrldeck. New work goes there.
+
 # kvscf — VS Code Focuser
 
 A small Windows app that scans your open **VS Code** / **VS Code Insiders** windows, lists them sorted
